@@ -1,0 +1,1 @@
+stanford-cs324: https://stanford-cs324.github.io/winter2022/lectures/introduction/
