@@ -1109,6 +1109,804 @@ if __name__ == "__main__":
     print(f"Generated sequence length: {generated.shape[1]}")
 ```
 
+### Adding KV-Cache
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        assert d_model % n_heads == 0
+        
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        
+    def forward(self, x, mask=None, kv_cache=None, use_cache=False):
+        """
+        Forward pass with optional KV-caching
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, d_model]
+            mask: Attention mask [batch_size, n_heads, seq_len, cached_len + seq_len]
+            kv_cache: Dictionary containing cached keys and values
+            use_cache: Whether to use and update the cache
+            
+        Returns:
+            output: Attention output [batch_size, seq_len, d_model]
+            updated_cache: Updated KV cache (if use_cache=True)
+        """
+        batch_size, seq_len, d_model = x.size()
+        
+        # Linear projections for current input
+        q = self.w_q(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        k = self.w_k(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)  
+        v = self.w_v(x).view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        
+        # Handle KV-cache for efficient generation
+        if use_cache and kv_cache is not None:
+            # Concatenate current k,v with cached k,v from previous steps
+            # This avoids recomputing attention for all previous tokens
+            cached_k = kv_cache.get('k')  # [batch_size, n_heads, cached_len, d_k]
+            cached_v = kv_cache.get('v')  # [batch_size, n_heads, cached_len, d_k]
+            
+            if cached_k is not None and cached_v is not None:
+                k = torch.cat([cached_k, k], dim=2)  # Concat along sequence dimension
+                v = torch.cat([cached_v, v], dim=2)
+        
+        # Update cache with current keys and values for next iteration
+        updated_cache = None
+        if use_cache:
+            updated_cache = {'k': k, 'v': v}
+        
+        # Compute attention scores: Q * K^T / sqrt(d_k)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        
+        # Apply causal mask to prevent attending to future positions
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        
+        # Apply softmax to get attention weights
+        attn_weights = F.softmax(scores, dim=-1)
+        
+        # Apply attention weights to values
+        attn_output = torch.matmul(attn_weights, v)
+        
+        # Reshape: concatenate all attention heads
+        # [batch_size, n_heads, seq_len, d_k] -> [batch_size, seq_len, d_model]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, d_model
+        )
+        
+        # Final linear projection
+        output = self.w_o(attn_output)
+        
+        return output, updated_cache
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(0.1)
+        
+    def forward(self, x):
+        return self.linear2(self.dropout(F.relu(self.linear1(x))))
+
+class DecoderBlock(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, n_heads)
+        self.feed_forward = FeedForward(d_model, d_ff)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(0.1)
+        
+    def forward(self, x, mask=None, kv_cache=None, use_cache=False):
+        """
+        Forward pass through decoder block with optional KV-caching
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, d_model]
+            mask: Attention mask
+            kv_cache: KV cache for this specific layer
+            use_cache: Whether to use and return cache
+            
+        Returns:
+            output: Block output [batch_size, seq_len, d_model]  
+            updated_cache: Updated cache for this layer
+        """
+        # Self-attention with residual connection and layer norm
+        # Pre-norm architecture: normalize before attention
+        normalized_x = self.norm1(x)
+        attn_output, updated_cache = self.self_attn(
+            normalized_x, mask, kv_cache, use_cache
+        )
+        x = x + self.dropout(attn_output)  # Residual connection
+        
+        # Feed-forward with residual connection and layer norm  
+        # Pre-norm: normalize before feed-forward
+        normalized_x = self.norm2(x)
+        ff_output = self.feed_forward(normalized_x)
+        x = x + self.dropout(ff_output)  # Residual connection
+        
+        return x, updated_cache
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
+                           (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        self.register_buffer('pe', pe.unsqueeze(0))
+        
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+class DecoderLLM(nn.Module):
+    def __init__(self, vocab_size, d_model=512, n_heads=8, n_layers=6, d_ff=2048, max_len=5000):
+        super().__init__()
+        
+        self.d_model = d_model
+        self.vocab_size = vocab_size
+        
+        # Token embedding
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        
+        # Positional encoding
+        self.pos_encoding = PositionalEncoding(d_model, max_len)
+        
+        # Decoder layers
+        self.decoder_layers = nn.ModuleList([
+            DecoderBlock(d_model, n_heads, d_ff) for _ in range(n_layers)
+        ])
+        
+        # Output layer
+        self.ln_f = nn.LayerNorm(d_model)
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.ones_(module.weight)
+            torch.nn.init.zeros_(module.bias)
+    
+    def create_causal_mask(self, seq_len, cached_len=0):
+        """
+        Create causal mask to prevent attention to future positions
+        
+        Args:
+            seq_len: Length of current sequence
+            cached_len: Length of cached sequence (for KV-cache)
+            
+        Returns:
+            mask: Causal attention mask [1, 1, seq_len, cached_len + seq_len]
+        """
+        total_len = cached_len + seq_len
+        
+        # Create causal mask: can attend to all cached positions + current and previous positions
+        # For cached tokens: can attend to all (they're from the past)
+        # For current tokens: can only attend to cached + previous current tokens
+        mask = torch.ones(seq_len, total_len)
+        
+        # Mask future positions in the current sequence
+        # Current tokens can attend to: [all cached tokens] + [current and previous current tokens]
+        if seq_len > 1:
+            current_mask = torch.tril(torch.ones(seq_len, seq_len))  # Lower triangular for current tokens
+            mask[:, cached_len:] = current_mask  # Apply causal mask to current portion
+            
+        return mask.unsqueeze(0).unsqueeze(0)  # Add batch and head dimensions
+    
+    def forward(self, input_ids, targets=None, kv_cache=None, use_cache=False):
+        """
+        Forward pass with optional KV-caching support
+        
+        Args:
+            input_ids: Input token IDs [batch_size, seq_len]
+            targets: Target token IDs for loss calculation [batch_size, seq_len] 
+            kv_cache: List of KV caches for each layer (for generation)
+            use_cache: Whether to use and return updated cache
+            
+        Returns:
+            logits: Output logits [batch_size, seq_len, vocab_size]
+            loss: Cross-entropy loss (if targets provided)
+            updated_cache: Updated KV cache for all layers (if use_cache=True)
+        """
+        batch_size, seq_len = input_ids.size()
+        
+        # Token embeddings scaled by sqrt(d_model) - common practice in transformers
+        x = self.token_embedding(input_ids) * math.sqrt(self.d_model)
+        
+        # Add positional encoding
+        # During caching, we need to add position encoding for the correct positions
+        if use_cache and kv_cache is not None and len(kv_cache) > 0:
+            # Get cached length from first layer's cache
+            cached_len = kv_cache[0]['k'].size(2) if kv_cache[0] and 'k' in kv_cache[0] else 0
+            # Add positional encoding starting from the cached position
+            pos_start = cached_len
+            x = x + self.pos_encoding.pe[:, pos_start:pos_start + seq_len]
+        else:
+            cached_len = 0
+            x = self.pos_encoding(x)
+        
+        # Create causal mask considering cached sequence length
+        mask = self.create_causal_mask(seq_len, cached_len).to(input_ids.device)
+        
+        # Initialize cache list if not provided
+        if use_cache and kv_cache is None:
+            kv_cache = [None] * len(self.decoder_layers)
+        
+        # Pass through decoder layers with KV-caching
+        updated_cache = []
+        for i, layer in enumerate(self.decoder_layers):
+            layer_cache = kv_cache[i] if (use_cache and kv_cache) else None
+            x, layer_updated_cache = layer(x, mask, layer_cache, use_cache)
+            
+            if use_cache:
+                updated_cache.append(layer_updated_cache)
+        
+        # Final layer normalization
+        x = self.ln_f(x)
+        
+        # Language modeling head - project to vocabulary size
+        logits = self.lm_head(x)
+        
+        # Calculate cross-entropy loss if targets are provided (training)
+        loss = None
+        if targets is not None:
+            # Flatten logits and targets for loss calculation
+            loss = F.cross_entropy(logits.view(-1, self.vocab_size), targets.view(-1))
+        
+        # Return cache only if use_cache is True
+        if use_cache:
+            return logits, loss, updated_cache
+        else:
+            return logits, loss
+    
+    def generate(self, input_ids, max_new_tokens=50, temperature=1.0, top_k=None):
+        """
+        Generate text autoregressively using KV-cache for efficiency
+        
+        This method demonstrates the key benefit of KV-caching: instead of recomputing
+        attention for all previous tokens at each step, we cache the key-value pairs
+        and reuse them, significantly speeding up generation.
+        
+        Args:
+            input_ids: Starting tokens [batch_size, initial_seq_len]
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature (higher = more random)
+            top_k: Top-k sampling (None = no filtering)
+            
+        Returns:
+            generated_ids: Complete sequence including input and generated tokens
+        """
+        self.eval()  # Set model to evaluation mode
+        
+        with torch.no_grad():
+            # Initialize KV cache - will be populated and grown during generation
+            kv_cache = [None] * len(self.decoder_layers)
+            
+            # First forward pass: process initial input and populate cache
+            current_ids = input_ids
+            logits, _, kv_cache = self.forward(current_ids, use_cache=True, kv_cache=kv_cache)
+            
+            # Generate tokens one by one
+            for step in range(max_new_tokens):
+                # Get logits for the last token (most recent)
+                next_token_logits = logits[:, -1, :] / temperature
+                
+                # Apply top-k filtering if specified
+                if top_k is not None:
+                    # Keep only top-k logits, set others to -inf
+                    v, _ = torch.topk(next_token_logits, top_k)
+                    next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
+                
+                # Convert logits to probabilities and sample next token
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                
+                # Add the new token to our sequence
+                current_ids = torch.cat([current_ids, next_token], dim=1)
+                
+                # CRITICAL: For next iteration, we only pass the NEW token through the model
+                # The KV-cache contains all the previous computations, so we don't need to
+                # recompute attention for tokens we've already processed
+                if step < max_new_tokens - 1:  # Don't compute on last iteration
+                    logits, _, kv_cache = self.forward(
+                        next_token,  # Only the new token!
+                        use_cache=True, 
+                        kv_cache=kv_cache  # Reuse cached key-value pairs
+                    )
+        
+        return current_ids
+
+    def generate_without_cache(self, input_ids, max_new_tokens=50, temperature=1.0, top_k=None):
+        """
+        Generate text without KV-cache (for comparison/debugging)
+        
+        This is the naive approach where we recompute attention for the entire sequence
+        at each generation step. Much slower than the cached version above.
+        """
+        self.eval()
+        
+        with torch.no_grad():
+            current_ids = input_ids
+            
+            for _ in range(max_new_tokens):
+                # Forward pass through entire sequence every time (inefficient!)
+                logits, _ = self.forward(current_ids, use_cache=False)
+                
+                # Sample next token (same logic as cached version)
+                next_token_logits = logits[:, -1, :] / temperature
+                
+                if top_k is not None:
+                    v, _ = torch.topk(next_token_logits, top_k)
+                    next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
+                
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                
+                # Append to sequence
+                current_ids = torch.cat([current_ids, next_token], dim=1)
+        
+        return current_ids
+
+# Example usage and training setup
+def train_step(model, batch, optimizer):
+    """
+    Single training step - KV-cache is not used during training
+    Training processes entire sequences at once, so caching doesn't help
+    """
+    input_ids, targets = batch
+    
+    # Forward pass without cache (training mode)
+    logits, loss = model(input_ids, targets, use_cache=False)
+    
+    # Backward pass
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    return loss.item()
+
+def compare_generation_speed():
+    """
+    Utility function to compare generation speed with and without KV-cache
+    This demonstrates the performance benefit of caching
+    """
+    import time
+    
+    # Initialize model
+    model = DecoderLLM(vocab_size=1000, d_model=256, n_heads=4, n_layers=4)
+    model.eval()
+    
+    # Create a sample input
+    input_ids = torch.randint(0, 1000, (1, 10))
+    
+    # Time generation with cache
+    start_time = time.time()
+    with_cache = model.generate(input_ids, max_new_tokens=20)
+    cache_time = time.time() - start_time
+    
+    # Time generation without cache  
+    start_time = time.time()
+    without_cache = model.generate_without_cache(input_ids, max_new_tokens=20)
+    no_cache_time = time.time() - start_time
+    
+    print(f"Generation with KV-cache: {cache_time:.3f}s")
+    print(f"Generation without cache: {no_cache_time:.3f}s") 
+    print(f"Speedup: {no_cache_time/cache_time:.2f}x")
+    
+    # Verify both methods produce same length output
+    print(f"Output lengths match: {with_cache.shape == without_cache.shape}")
+
+# Example initialization and usage
+if __name__ == "__main__":
+    # Model parameters
+    vocab_size = 50257  # GPT-2 vocab size
+    d_model = 512
+    n_heads = 8
+    n_layers = 6
+    d_ff = 2048
+    
+    # Initialize model
+    model = DecoderLLM(
+        vocab_size=vocab_size,
+        d_model=d_model,
+        n_heads=n_heads,
+        n_layers=n_layers,
+        d_ff=d_ff
+    )
+    
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # Example forward pass (training mode - no cache)
+    batch_size = 2
+    seq_len = 10
+    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+    targets = torch.randint(0, vocab_size, (batch_size, seq_len))
+    
+    logits, loss = model(input_ids, targets, use_cache=False)
+    print(f"Training - Logits shape: {logits.shape}")
+    print(f"Training - Loss: {loss.item()}")
+    
+    # Example forward pass with cache (generation mode)
+    single_input = torch.randint(0, vocab_size, (1, 5))
+    logits_cached, _, cache = model(single_input, use_cache=True)
+    print(f"Cached - Logits shape: {logits_cached.shape}")
+    print(f"Cache contains {len(cache)} layer caches")
+    
+    # Example generation with KV-cache
+    prompt = torch.randint(0, vocab_size, (1, 5))
+    generated = model.generate(prompt, max_new_tokens=10, temperature=0.8)
+    print(f"Generated sequence length: {generated.shape[1]} (input: {prompt.shape[1]}, new: {generated.shape[1] - prompt.shape[1]})")
+    
+    # Uncomment to compare generation speeds
+    # compare_generation_speed()
+```
+
+#### The Problem: Positional Encoding with Caching
+
+When using KV-cache, we need to ensure tokens get the **correct positional encodings** based on their **absolute position** in the full sequence, not just their position in the current input chunk.
+
+**1. Check if we're using cache with existing cached data**
+
+python
+
+```python
+if use_cache and kv_cache is not None and len(kv_cache) > 0:
+```
+
+This checks:
+
+- `use_cache`: Are we in caching mode?
+- `kv_cache is not None`: Do we have a cache object?
+- `len(kv_cache) > 0`: Does the cache actually contain data from previous steps?
+
+**2. Determine how many tokens are already cached**
+
+python
+
+```python
+cached_len = kv_cache[0]['k'].size(2) if kv_cache[0] and 'k' in kv_cache[0] else 0
+```
+
+Let's break this down:
+
+- `kv_cache[0]`: Get the cache from the first layer
+- `kv_cache[0]['k']`: Get the cached Key tensor
+- `.size(2)`: Get dimension 2 (sequence length dimension)
+
+**Key tensor shape**: `[batch_size, n_heads, seq_len, d_k]`
+
+- Dimension 0: batch_size
+- Dimension 1: n_heads
+- **Dimension 2: seq_len** ← This tells us how many tokens are cached
+- Dimension 3: d_k
+
+**3. Apply positional encoding starting from the correct position**
+
+python
+
+```python
+pos_start = cached_len
+x = x + self.pos_encoding.pe[:, pos_start:pos_start + seq_len]
+```
+
+**Key insight**: We slice the positional encoding to start from `cached_len`, not from 0!
+
+**Visual Example:**
+
+Let's say we're generating text step by step:
+
+**Step 1: Initial prompt "Hello world"**
+
+python
+
+```python
+# Input: ["Hello", "world"] (tokens 0, 1)
+# No cache yet
+cached_len = 0
+pos_start = 0
+# Use positional encodings [0, 1]
+x = x + pos_encoding.pe[:, 0:2]  # positions 0, 1
+```
+
+**Step 2: Generate next token "how"**
+
+python
+
+```python
+# Input: ["how"] (this is token 2 in the full sequence)
+# Cache contains: ["Hello", "world"] 
+cached_len = 2  # Two tokens already processed
+pos_start = 2
+# Use positional encoding [2] (not [0]!)
+x = x + pos_encoding.pe[:, 2:3]  # position 2
+```
+
+**Step 3: Generate next token "are"**
+
+python
+
+```python
+# Input: ["are"] (this is token 3 in the full sequence)
+# Cache contains: ["Hello", "world", "how"]
+cached_len = 3
+pos_start = 3
+# Use positional encoding [3]
+x = x + pos_encoding.pe[:, 3:4]  # position 3
+```
+
+**Why This Matters:**
+
+**Without proper positional encoding:**
+
+python
+
+```python
+# WRONG: This would give every new token position 0
+x = x + self.pos_encoding(x)  # Always starts from position 0
+```
+
+**With correct positional encoding:**
+
+python
+
+```python
+# CORRECT: Each token gets its true absolute position
+x = x + self.pos_encoding.pe[:, pos_start:pos_start + seq_len]
+```
+
+**The Fallback Case:**
+
+python
+
+```python
+else:
+    cached_len = 0
+    x = self.pos_encoding(x)
+```
+
+This handles:
+
+- **Training mode** (no cache)
+- **First generation step** (cache is empty)
+- **Regular forward pass** (no caching)
+
+In these cases, we use normal positional encoding starting from position 0.
+
+**Complete Example:**
+
+python
+
+```python
+# Generation sequence: "The cat sat on the mat"
+# Tokens: [1, 2, 3, 4, 5, 6]
+
+# Step 1: Process initial prompt "The cat"
+input_ids = [1, 2]  # "The cat"
+cached_len = 0
+# Positions used: [0, 1]
+
+# Step 2: Generate "sat" 
+input_ids = [3]  # just "sat"
+cached_len = 2  # "The cat" in cache
+# Position used: [2] ← Critical: position 2, not 0!
+
+# Step 3: Generate "on"
+input_ids = [4]  # just "on"  
+cached_len = 3  # "The cat sat" in cache
+# Position used: [3]
+
+# And so on...
+```
+
+**Key Takeaway:**
+
+This code ensures that **each token receives the positional encoding corresponding to its absolute position in the full sequence**, even when we're only processing one new token at a time during cached generation. This maintains the model's understanding of token positions throughout the generation process.
+
+#### **The Challenge: Masking with Cache**
+
+When using KV-cache, our attention needs to work on a **mixed sequence**:
+
+- **Cached tokens**: From previous generation steps (all in the "past")
+- **Current tokens**: New tokens being processed (need causal masking among themselves)
+
+**1. Calculate total sequence length**
+
+python
+
+```python
+total_len = cached_len + seq_len
+```
+
+This is the **total attention context**: cached tokens + current tokens.
+
+**2. Initialize mask with all 1s**
+
+python
+
+```python
+mask = torch.ones(seq_len, total_len)
+```
+
+**Key insight**: The mask shape is `[current_seq_len, total_context_len]`
+
+- **Rows**: Current tokens (what we're computing attention for)
+- **Columns**: All tokens (cached + current) that we can potentially attend to
+
+Starting with all 1s means "can attend to everything" - we'll selectively mask out future positions.
+
+**3. Apply causal masking to current tokens**
+
+python
+
+```python
+if seq_len > 1:
+    current_mask = torch.tril(torch.ones(seq_len, seq_len))  # Lower triangular
+    mask[:, cached_len:] = current_mask  # Apply to current portion only
+```
+
+This creates a lower triangular mask for the current tokens only.
+
+**Visual Examples:**
+
+- **Example 1: First generation step (no cache)**
+
+python
+
+```python
+# Processing initial prompt: "The cat sat"
+seq_len = 3, cached_len = 0
+total_len = 3
+
+mask = torch.ones(3, 3)
+# Initial: [[1, 1, 1],
+#          [1, 1, 1], 
+#          [1, 1, 1]]
+
+current_mask = torch.tril(torch.ones(3, 3))
+# current_mask: [[1, 0, 0],
+#               [1, 1, 0],
+#               [1, 1, 1]]
+
+mask[:, 0:] = current_mask  # cached_len=0, so start from 0
+# Final: [[1, 0, 0],  ← "The" can only see "The"
+#        [1, 1, 0],  ← "cat" can see "The", "cat" 
+#        [1, 1, 1]]  ← "sat" can see "The", "cat", "sat"
+```
+
+- **Example 2: Second generation step (with cache)**
+
+python
+
+```python
+# Cache contains: "The cat sat" (3 tokens)
+# Processing: "on" (1 new token)
+seq_len = 1, cached_len = 3
+total_len = 4
+
+mask = torch.ones(1, 4)
+# Initial: [[1, 1, 1, 1]]  ← "on" can see everything initially
+
+# seq_len = 1, so the if condition is false
+# No additional masking needed!
+
+# Final: [[1, 1, 1, 1]]  ← "on" can see "The", "cat", "sat", "on"
+```
+
+- **Example 3: Processing multiple new tokens with cache**
+
+python
+
+```python
+# Cache contains: "The cat" (2 tokens)  
+# Processing: "sat on" (2 new tokens)
+seq_len = 2, cached_len = 2
+total_len = 4
+
+mask = torch.ones(2, 4)
+# Initial: [[1, 1, 1, 1],
+#          [1, 1, 1, 1]]
+
+current_mask = torch.tril(torch.ones(2, 2))
+# current_mask: [[1, 0],
+#               [1, 1]]
+
+mask[:, 2:] = current_mask  # Apply to positions 2 and 3 (current tokens)
+# Final: [[1, 1, 1, 0],  ← "sat" sees "The", "cat", "sat" (not "on")
+#        [1, 1, 1, 1]]  ← "on" sees "The", "cat", "sat", "on"
+```
+
+**Key Insights:**
+
+**1. Cached tokens are always visible**
+
+python
+
+```python
+mask[:, 0:cached_len] = 1  # (implicitly, since we start with all 1s)
+```
+
+All cached tokens are from the past, so current tokens can always attend to them.
+
+**2. Current tokens need causal masking among themselves**
+
+python
+
+```python
+mask[:, cached_len:] = current_mask
+```
+
+Current tokens can only see previous current tokens, not future ones.
+
+**3. The mask structure**
+
+```
+[cached_tokens] [current_tokens]
+     ↑              ↑
+  Always 1s    Causal mask applied
+```
+
+**Complete Example with Attention:**
+
+python
+
+```python
+# Let's trace through attention computation
+# Cache: "Hello world" (tokens 0,1)
+# Current: "how are" (tokens 2,3)
+
+# Queries: from "how are" [2x64] 
+# Keys: from "Hello world how are" [4x64] (cached + current)
+# Values: from "Hello world how are" [4x64]
+
+# Attention scores before masking: [2x4]
+# scores = [[s00, s01, s02, s03],  ← "how" attending to all
+#          [s10, s11, s12, s13]]  ← "are" attending to all
+
+# Mask: [[1, 1, 1, 0],  ← "how" can't see "are" 
+#       [1, 1, 1, 1]]  ← "are" can see everything
+
+# After masking:
+# scores = [[s00, s01, s02, -inf],  ← "how" can't attend to "are"
+#          [s10, s11, s12, s13]]   ← "are" can attend to all
+```
+
+**Why This Design Works:**
+
+1. **Cached tokens**: Always visible because they're from the past
+2. **Current tokens**: Follow causal masking rules among themselves
+3. **Efficiency**: We only compute attention for current tokens, not recalculate for cached ones
+4. **Correctness**: Maintains the autoregressive property that tokens can't see future tokens
+
+The mask ensures that the attention mechanism respects causality even when we're mixing cached computations with new token processing!
+
 ## MOE
 
 ```python

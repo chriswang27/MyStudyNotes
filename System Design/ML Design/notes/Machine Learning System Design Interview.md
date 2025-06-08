@@ -649,3 +649,110 @@ Note that the preprocessing and blurring services are separate in the design. Th
 ##### Data pipeline
 
 This pipeline is responsible for processing users' reports, generating new training data, and preparing training data to be used by the model. Data pipeline components are mostly self-explanatory. Hard negative mining is the only component that needs more explanation.
+
+# 04 Youtube Video Search
+
+## Clarifying Requirements
+
+**Candidate:** Is the input query text-only, or can users search with an image or video?
+**Interviewer:** Text queries only.
+
+**Candidate:** Is the content on the platform only in video form? How about images or audio files?
+**Interviewer:** The platform only serves videos.
+
+**Candidate:** The YouTube search system is very complex. Can I assume the relevancy of a video is determined solely by its visual content and the textual data associated with the video, such as the title and description?
+**Interviewer:** Yes, that's a fair assumption.
+
+**Candidate:** Is there any training data available?
+**Interviewer:** Yes, let's assume we have ten million pairs of ⟨⟨ video, text query ⟩⟩.
+
+**Candidate:** Do we need to support other languages in the search system?
+**Interviewer:** For simplicity, let's assume only English is supported.
+
+**Candidate:** How many videos are available on the platform?
+**Interviewer:** One billion videos.
+
+**Candidate:** Do we need to personalize the results? Should we rank the results differently for different users, based on their past interactions?
+**Interviewer:** As opposed to recommendation systems where personalization is essential, we do not necessarily have to personalize results in search systems. To simplify the problem, let's assume no personalization is required.
+
+## Frame the Problem as an ML Task
+
+### Defining ML objective
+
+One way to translate this into an ML objective is to rank videos based on their relevance to the text query.
+
+### Specifying input and output
+
+Takes a text query as input and outputs a ranked list of videos sorted by their relevance to the text query.
+
+### Choosing the right ML category
+
+![](../../../img/ML/ml design/4-1.png)
+
+Visual Search: Get embeddings for videos and text queries, and compute the similarity score by dot product. Then we rank the videos based on their similarity scores.
+
+Test search: Commonly uses "inverted index" to search video titles and descriptions. **No need to use ML models.** (Can also discuss trade-off here)
+
+## Data Preparation
+
+### Data engineering
+
+Training data ready: <video, query>
+
+### Feature engineering
+
+Preprocess video: decode frames, sample frames, resizing, and normalizing
+
+## Model Development
+
+### Model Selection
+
+Text encoder: Bert/LLM
+
+Video encoder
+
+- video model: slower but better performative
+- frame model: faster, computational efficient but less performative
+
+### Model Development
+
+![](../../../img/ML/ml design/4-2.png)
+
+## Evaluation
+
+- MRR (Mean Reciprocal Rank)
+  $$
+  MRR=\frac{1}{m}\sum^m_{i=1} \frac{1}{rank_i}
+  $$
+  
+
+- Online metrics
+  - **CTR**
+  - **Video completion rate**
+  - **Total watch time of search results.**
+
+## Serving
+
+![](../../../img/ML/ml design/4-3.png)
+
+**Fusing layer.** This component takes two different lists of relevant videos from the previous step, and combines them into a new list of videos.
+
+The fusing layer can be implemented in two ways, the easiest of which is to re-rank videos based on the weighted sum of their predicted relevance scores. A more complex approach is to adopt an additional model to re-rank the videos, which is more expensive because it requires model training. Additionally, it's slower at serving. As a result, we use the former approach.
+
+## Other talking points
+
+Before concluding this chapter, it's important to note we have simplified the system design of the video search system. In practice, it is much more complex. Some improvements may include:
+
+- Use a multi-stage design (candidate generation + ranking).
+- Use more video features such as video length, video popularity, etc.
+- Instead of relying on annotated data, use interactions (e.g., clicks, likes, etc.) to construct and label data. This allows us to continuously train the model.
+- Use an ML model to find titles and tags which are semantically similar to the text query. This model can be combined with Elasticsearch to improve search quality.
+
+If there's time left at the end of the interview, here are some additional talking points:
+
+- An important topic in search systems is query understanding, such as spelling correction, query category identification, and entity recognition. How to build a query understanding component? 
+- How to build a multi-modal system that processes speech and audio to improve search results.
+- How to extend this work to support other languages.
+- Near-duplicate videos in the final output may negatively impact user experience. How to detect near-duplicate videos so we can remove them before displaying the results.
+- Text queries can be divided into head, torso, and tail queries. What are the different approaches commonly used in each case.
+- How to consider popularity and freshness when producing the output list.
