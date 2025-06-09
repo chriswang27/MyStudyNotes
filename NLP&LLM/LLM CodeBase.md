@@ -2133,3 +2133,401 @@ if __name__ == "__main__":
     test_moe()
 ```
 
+## BPE
+
+```python
+import re
+from collections import defaultdict, Counter
+from typing import List, Dict, Tuple, Set
+
+class SimpleBPETokenizer:
+    """
+    A simple implementation of Byte Pair Encoding (BPE) tokenizer.
+    
+    BPE is a subword tokenization algorithm that iteratively merges the most
+    frequent pair of consecutive symbols in a corpus to create a vocabulary
+    of subword units.
+    
+    The algorithm works in two phases:
+    1. Training: Learn merge rules from a training corpus
+    2. Encoding: Apply learned rules to tokenize new text
+    """
+    
+    def __init__(self, vocab_size: int = 1000):
+        """
+        Initialize the BPE tokenizer.
+        
+        Args:
+            vocab_size: Target vocabulary size (number of tokens to learn)
+        """
+        self.vocab_size = vocab_size
+        self.word_freqs = {}  # Frequency of each word in training corpus
+        self.vocab = set()    # Final vocabulary (all possible tokens)
+        self.merges = []      # List of merge rules learned during training
+        self.token_to_id = {} # Mapping from token to integer ID
+        self.id_to_token = {} # Mapping from integer ID to token
+        
+        # Special tokens
+        self.unk_token = "<UNK>"  # Unknown token for out-of-vocabulary words
+        self.end_token = "</w>"   # End-of-word token
+    
+    def _get_word_frequencies(self, text: str) -> Dict[str, int]:
+        """
+        Extract word frequencies from text and add end-of-word markers.
+        
+        Args:
+            text: Input text to analyze
+            
+        Returns:
+            Dictionary mapping words (with </w> suffix) to their frequencies
+            
+        Example:
+            Input: "hello world hello"
+            Output: {"h e l l o </w>": 2, "w o r l d </w>": 1}
+        """
+        # Split text into words and count frequencies
+        words = text.lower().split()
+        word_freqs = Counter(words)
+        
+        # Convert each word to character sequence with end-of-word marker
+        char_word_freqs = {}
+        for word, freq in word_freqs.items():
+            # Split word into characters and add end-of-word token
+            char_word = ' '.join(list(word)) + ' ' + self.end_token
+            char_word_freqs[char_word] = freq
+            
+        return char_word_freqs
+    
+    def _get_pairs(self, word_freqs: Dict[str, int]) -> Counter:
+        """
+        Get all pairs of consecutive symbols and their frequencies.
+        
+        Args:
+            word_freqs: Dictionary of word frequencies
+            
+        Returns:
+            Counter object with pairs and their total frequencies
+            
+        Example:
+            Input: {"h e l l o </w>": 2, "w o r l d </w>": 1}
+            Output: Counter({('l', 'l'): 2, ('h', 'e'): 2, ('e', 'l'): 2, ...})
+        """
+        pairs = defaultdict(int)
+        
+        for word, freq in word_freqs.items():
+            symbols = word.split()
+            
+            # Count all consecutive pairs in this word
+            for i in range(len(symbols) - 1):
+                pair = (symbols[i], symbols[i + 1])
+                pairs[pair] += freq
+                
+        return Counter(pairs)
+    
+    def _merge_vocab(self, pair: Tuple[str, str], word_freqs: Dict[str, int]) -> Dict[str, int]:
+        """
+        Merge the most frequent pair in the vocabulary.
+        
+        Args:
+            pair: The pair of symbols to merge (e.g., ('l', 'l'))
+            word_freqs: Current word frequencies
+            
+        Returns:
+            Updated word frequencies after merging the pair
+            
+        Example:
+            pair = ('l', 'l')
+            Before: {"h e l l o </w>": 2}
+            After:  {"h e ll o </w>": 2}
+        """
+        new_word_freqs = {}
+        for word in word_freqs:
+            # Replace the pair with merged version
+            new_word = word.replace(" ".join(pair), "".join(pair))
+            new_word_freqs[new_word] = word_freqs[word]
+            
+        return new_word_freqs
+    
+    def train(self, text: str) -> None:
+        """
+        Train the BPE tokenizer on the given text.
+        
+        This is the core training algorithm:
+        1. Initialize vocabulary with all characters
+        2. Repeatedly find the most frequent pair of symbols
+        3. Merge this pair to create a new symbol
+        4. Continue until we reach the desired vocabulary size
+        
+        Args:
+            text: Training text corpus
+        """
+        print("Starting BPE training...")
+        print(f"Target vocabulary size: {self.vocab_size}")
+        
+        # Step 1: Get word frequencies with character-level splitting
+        self.word_freqs = self._get_word_frequencies(text)
+        print(f"\nInitial word frequencies (first 3):")
+        for i, (word, freq) in enumerate(list(self.word_freqs.items())[:3]):
+            print(f"  '{word}' -> {freq}")
+        
+        # Step 2: Initialize vocabulary with all unique characters
+        self.vocab = set()
+        for word in self.word_freqs.keys():
+            self.vocab.update(word.split())
+        
+        print(f"\nInitial vocabulary size: {len(self.vocab)}")
+        print(f"Initial vocab (first 10): {sorted(list(self.vocab))[:10]}")
+        
+        # Step 3: Iteratively merge most frequent pairs
+        num_merges = self.vocab_size - len(self.vocab)
+        print(f"\nWill perform {num_merges} merges...")
+        
+        for i in range(num_merges):
+            # Get all pairs and their frequencies
+            pairs = self._get_pairs(self.word_freqs)
+            
+            if not pairs:
+                print(f"No more pairs to merge. Stopping at iteration {i}")
+                break
+                
+            # Find the most frequent pair
+            best_pair = pairs.most_common(1)[0][0]
+            best_freq = pairs[best_pair]
+            
+            if i < 5 or i % 100 == 0:  # Show progress for first few and every 100
+                print(f"  Merge {i+1}: {best_pair} (frequency: {best_freq})")
+            
+            # Merge this pair in all words
+            self.word_freqs = self._merge_vocab(best_pair, self.word_freqs)
+            
+            # Add the new merged token to vocabulary and merges list
+            new_token = ''.join(best_pair)
+            self.vocab.add(new_token)
+            self.merges.append(best_pair)
+        
+        # Step 4: Create token-to-ID mappings
+        self.vocab.add(self.unk_token)  # Add unknown token
+        vocab_list = sorted(list(self.vocab))
+        
+        self.token_to_id = {token: i for i, token in enumerate(vocab_list)}
+        self.id_to_token = {i: token for i, token in enumerate(vocab_list)}
+        
+        print(f"\nTraining complete!")
+        print(f"Final vocabulary size: {len(self.vocab)}")
+        print(f"Number of merge rules learned: {len(self.merges)}")
+        
+        # Show some example merge rules
+        print(f"\nFirst 5 merge rules:")
+        for i, (left, right) in enumerate(self.merges[:5]):
+            print(f"  {i+1}. '{left}' + '{right}' -> '{left}{right}'")
+    
+    def _apply_merges(self, word: str) -> List[str]:
+        """
+        Apply learned merge rules to a single word.
+        
+        Args:
+            word: Word to tokenize (space-separated characters)
+            
+        Returns:
+            List of tokens after applying all merge rules
+            
+        Example:
+            Input: "h e l l o </w>"
+            After merges: ["he", "ll", "o", "</w>"]
+        """
+        if len(word.split()) == 1:
+            return [word]
+        
+        # Apply each merge rule in order
+        for pair in self.merges:
+            bigram = re.escape(' '.join(pair))
+            pattern = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
+            word = pattern.sub(''.join(pair), word)
+        
+        return word.split()
+    
+    def encode(self, text: str) -> List[int]:
+        """
+        Encode text into token IDs using learned BPE rules.
+        
+        Args:
+            text: Text to encode
+            
+        Returns:
+            List of token IDs
+        """
+        if not self.merges:
+            raise ValueError("Tokenizer not trained! Call train() first.")
+        
+        token_ids = []
+        words = text.lower().split()
+        
+        for word in words:
+            # Convert word to character sequence with end-of-word marker
+            char_word = ' '.join(list(word)) + ' ' + self.end_token
+            
+            # Apply learned merges
+            tokens = self._apply_merges(char_word)
+            
+            # Convert tokens to IDs
+            for token in tokens:
+                if token in self.token_to_id:
+                    token_ids.append(self.token_to_id[token])
+                else:
+                    token_ids.append(self.token_to_id[self.unk_token])
+        
+        return token_ids
+    
+    def decode(self, token_ids: List[int]) -> str:
+        """
+        Decode token IDs back to text.
+        
+        Args:
+            token_ids: List of token IDs to decode
+            
+        Returns:
+            Decoded text string
+        """
+        if not self.id_to_token:
+            raise ValueError("Tokenizer not trained! Call train() first.")
+        
+        tokens = []
+        for token_id in token_ids:
+            if token_id in self.id_to_token:
+                tokens.append(self.id_to_token[token_id])
+            else:
+                tokens.append(self.unk_token)
+        
+        # Join tokens and clean up
+        text = ''.join(tokens)
+        
+        # Replace end-of-word markers with spaces
+        text = text.replace(self.end_token, ' ')
+        
+        # Clean up extra spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    
+    def tokenize(self, text: str) -> List[str]:
+        """
+        Tokenize text into subword tokens (without converting to IDs).
+        
+        Args:
+            text: Text to tokenize
+            
+        Returns:
+            List of subword tokens
+        """
+        token_ids = self.encode(text)
+        return [self.id_to_token[tid] for tid in token_ids]
+    
+    def get_vocab_info(self) -> Dict:
+        """Get information about the learned vocabulary."""
+        return {
+            'vocab_size': len(self.vocab),
+            'num_merges': len(self.merges),
+            'sample_tokens': sorted(list(self.vocab))[:20],
+            'sample_merges': self.merges[:10]
+        }
+
+
+# Example usage and demonstration
+if __name__ == "__main__":
+    print("=== BPE Tokenizer Demo ===\n")
+    
+    # Sample training text
+    training_text = """
+    hello world hello there world wonderful
+    hello wonderful world this is a test
+    testing testing one two three
+    the quick brown fox jumps over the lazy dog
+    hello again world wonderful day today
+    programming is fun and wonderful
+    machine learning with transformers
+    """
+    
+    print("Training Text:")
+    print(training_text.strip())
+    print("\n" + "="*50)
+    
+    # Initialize and train tokenizer
+    tokenizer = SimpleBPETokenizer(vocab_size=150)
+    tokenizer.train(training_text)
+    
+    print("\n" + "="*50)
+    print("VOCABULARY INFORMATION")
+    print("="*50)
+    
+    vocab_info = tokenizer.get_vocab_info()
+    print(f"Final vocabulary size: {vocab_info['vocab_size']}")
+    print(f"Number of merge rules: {vocab_info['num_merges']}")
+    
+    print(f"\nSample tokens from vocabulary:")
+    for token in vocab_info['sample_tokens']:
+        print(f"  '{token}'")
+    
+    print(f"\nSample merge rules:")
+    for i, (left, right) in enumerate(vocab_info['sample_merges']):
+        print(f"  {i+1}. '{left}' + '{right}' -> '{left}{right}'")
+    
+    print("\n" + "="*50)
+    print("TOKENIZATION EXAMPLES")
+    print("="*50)
+    
+    # Test tokenization on various examples
+    test_sentences = [
+        "hello world",
+        "wonderful day",
+        "testing machine learning",
+        "unknown words here",
+        "programming transformers"
+    ]
+    
+    for sentence in test_sentences:
+        print(f"\nInput: '{sentence}'")
+        
+        # Tokenize
+        tokens = tokenizer.tokenize(sentence)
+        print(f"Tokens: {tokens}")
+        
+        # Encode to IDs
+        token_ids = tokenizer.encode(sentence)
+        print(f"Token IDs: {token_ids}")
+        
+        # Decode back
+        decoded = tokenizer.decode(token_ids)
+        print(f"Decoded: '{decoded}'")
+        
+        # Verify round-trip
+        if decoded.lower() == sentence.lower():
+            print("✓ Round-trip successful!")
+        else:
+            print("✗ Round-trip mismatch!")
+    
+    print("\n" + "="*50)
+    print("ALGORITHM INSIGHTS")
+    print("="*50)
+    
+    print("""
+BPE Algorithm Summary:
+1. Start with character-level vocabulary
+2. Find most frequent adjacent symbol pairs
+3. Merge the most frequent pair into a new symbol
+4. Repeat until reaching target vocabulary size
+5. Use learned merge rules to tokenize new text
+
+Benefits:
+- Handles out-of-vocabulary words gracefully
+- Balances vocabulary size with representation quality
+- Works well for multiple languages
+- Efficient subword representation
+
+Applications:
+- Neural machine translation (original use case)
+- Language models (GPT, BERT variants)
+- Text classification and generation
+- Multilingual NLP systems
+    """)
+```
+

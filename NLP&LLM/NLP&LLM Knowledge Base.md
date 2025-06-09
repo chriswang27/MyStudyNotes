@@ -305,3 +305,12 @@ Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = *
   - Load balancing loss: scaling factor * num_experts * $\sum p_i f_i$ -> this reduces the overall imbalance between assigned importance and actual routing
 
 - Expert capacity
+
+
+
+## Tokenizer
+
+### BPE
+
+Most common pair of consecutive byte of data is replaced with a byte that does not occur in data.
+
