@@ -6,8 +6,10 @@
 
 Sigmoid activation
 $$
-h(x)=\frac{1}{1+e^{-z}}
+h(x)=\frac{1}{1+e^{-z}}=\frac{1}{1+e^{-wX+b}}
 $$
+The goal is to find weights w*w* and bias b*b* that **maximize** the likelihood of observing the data.
+
 Probability
 $$
 p(y|x;\theta)=h_\theta(x)^y(1-h_\theta(x))^{(1-y)}
@@ -20,13 +22,15 @@ Log likelihood
 $$
 l(\theta)=\sum^m_{i=1}y^{(i)}\log h_\theta(x^{(i)})+(1-y^{(i)})\log (1-h_\theta(x^{(i)}))
 $$
-Unlike Linear Regression, we cannot use MSE because our prediction function is non-linear (due to sigmoid transform). Squaring this prediction as we do in MSE results in a non-convex function with many local minimums. If our cost function has many local minimums, gradient descent may not find the optimal global minimum.
+### Gradient
 
-Cross-Entropy Cost: $J(\theta)=\frac{1}{m}l(\theta)$.
-
-Choose $\theta$ that maxmizes the $l(\theta)$
+To find the best w and b we use **gradient ascent** on the **log-likelihood function** - the $l(\theta)$
 $$
-\theta_j=\theta_j-\alpha\frac{\partial}{\partial \theta_j}J(\theta)\\=\theta_j+\alpha\frac{1}{m}\sum^m_{i=1}x^{(i)}(y^{(i)}-h_\theta(x^{(i)}))
+l'_{w_j}=\frac{1}{n}\sum_{i=1}^n(y_i-h_\theta(x))x_{ij}
+$$
+
+$$
+\theta_j=\theta_j+\alpha l'_{w_j}\\=\theta_j+\alpha\frac{1}{n}\sum^n_{i=1}x^{(i)}(y^{(i)}-h_\theta(x^{(i)}))
 $$
 
 ## Pseudo Code

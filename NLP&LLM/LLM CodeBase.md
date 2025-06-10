@@ -1739,8 +1739,6 @@ When using KV-cache, our attention needs to work on a **mixed sequence**:
 
 **1. Calculate total sequence length**
 
-python
-
 ```python
 total_len = cached_len + seq_len
 ```
@@ -1748,8 +1746,6 @@ total_len = cached_len + seq_len
 This is the **total attention context**: cached tokens + current tokens.
 
 **2. Initialize mask with all 1s**
-
-python
 
 ```python
 mask = torch.ones(seq_len, total_len)
@@ -1763,8 +1759,6 @@ mask = torch.ones(seq_len, total_len)
 Starting with all 1s means "can attend to everything" - we'll selectively mask out future positions.
 
 **3. Apply causal masking to current tokens**
-
-python
 
 ```python
 if seq_len > 1:
@@ -1847,8 +1841,6 @@ mask[:, 2:] = current_mask  # Apply to positions 2 and 3 (current tokens)
 
 **1. Cached tokens are always visible**
 
-python
-
 ```python
 mask[:, 0:cached_len] = 1  # (implicitly, since we start with all 1s)
 ```
@@ -1856,8 +1848,6 @@ mask[:, 0:cached_len] = 1  # (implicitly, since we start with all 1s)
 All cached tokens are from the past, so current tokens can always attend to them.
 
 **2. Current tokens need causal masking among themselves**
-
-python
 
 ```python
 mask[:, cached_len:] = current_mask
@@ -1874,8 +1864,6 @@ Current tokens can only see previous current tokens, not future ones.
 ```
 
 **Complete Example with Attention:**
-
-python
 
 ```python
 # Let's trace through attention computation
