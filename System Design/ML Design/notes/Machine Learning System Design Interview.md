@@ -725,7 +725,6 @@ Video encoder
   MRR=\frac{1}{m}\sum^m_{i=1} \frac{1}{rank_i}
   $$
   
-
 - Online metrics
   - **CTR**
   - **Video completion rate**
@@ -756,3 +755,121 @@ If there's time left at the end of the interview, here are some additional talki
 - Near-duplicate videos in the final output may negatively impact user experience. How to detect near-duplicate videos so we can remove them before displaying the results.
 - Text queries can be divided into head, torso, and tail queries. What are the different approaches commonly used in each case.
 - How to consider popularity and freshness when producing the output list.
+
+# 06 Video Recommendation System
+
+## Clarification
+
+**Candidate:** Can I assume the business objective of building a video recommendation system is to increase user engagement?
+**Interview**: That’s correct.
+
+**Candidate:** Does the system recommend similar videos to a video a user is watching right now? Or does it show a personalized list of videos on the user’s homepage?
+**Interviewer:** This is a homepage video recommendation system, which recommends personalized videos to users when they load the homepage.
+
+**Candidate:** Since YouTube is a global service, can I assume users are located worldwide and videos are in different languages?
+**Interviewer:** That’s a fair assumption.
+
+**Candidate:** Can I assume we can construct the dataset based on user interactions with video content?
+**Interviewer:** Yes, that sounds good.
+
+**Candidate:** Can a user group videos together by creating playlists? Playlists can be informative for the ML model during the learning phase.
+**Interviewer:** For the sake of simplicity, let’s assume the playlist feature does not exist.
+
+**Candidate:** How many videos are available on the platform?
+**Interviewer:** We have about 10 billion videos.
+
+**Candidate:** How fast should the system recommend videos to a user? Can I assume the recommendation should not take more than 200 milliseconds?
+**Interviewer:** That sounds good.
+
+## Frame the Problem as an ML Task
+
+### Defining the ML objective
+
+**Maximize the number of relevant videos.** This objective produces recommendations that are relevant to users. Engineers or product managers can define relevance based on some rules. Such rules can be based on implicit and explicit user reactions. For example, one definition could state a video is relevant if a user explicitly presses the "like" button or watches at least half of it. Once we define relevance, we can construct a dataset and train a model to predict the relevance score between a user and a video.
+
+### Specifying input and output
+
+- Input: user/user profile
+- Output: Ranked list of videos
+
+### Chossing the right ML category
+
+#### Content-based filtering
+
+1. User A engaged with videos XX and YY in the past
+2. Video ZZ is similar to video XX and video YY
+3. The system recommends video ZZ to user AA
+
+Content-based filtering has pros and cons.
+
+**Pros:**
+
+- **Ability to recommend new videos.** With this method, we don't need to wait for interaction data from users to build video profiles for new videos. The video profile depends entirely upon its features.
+- **Ability to capture the unique interests of users.** This is because we recommend videos based on users' previous engagements.
+
+**Cons:**
+
+- **Difficult to discover a user's new interests.**
+- The method requires **domain knowledge**. We often need to engineer video features manually.
+
+#### Collaborative filtering (CF)
+
+The goal is to recommend a new video to user A.
+
+1. Find a similar user to AA based on their previous interactions; say user BB
+2. Find a video that user B engaged with but which user A has not seen yet; say video ZZ
+3. Recommend video ZZ to user AA
+
+**Pros:**
+
+- **No domain knowledge needed.** CF does not rely on video features, which means no domain knowledge is needed to engineer features from videos.
+- **Easy to discover users' new areas of interest.** The system can recommend videos about new topics that other similar users engaged with in the past.
+- **Efficient.** Models based on CF are usually faster and less compute-intensive than content-based filtering, as they do not rely on video features.
+
+**Cons:**
+
+- **Cold-start problem.** This refers to a situation when limited data is available for a new video or user, meaning the system cannot make accurate recommendations. CF suffers from a cold-start problem due to the lack of historical interaction data for new users or videos. This lack of interactions prevents CF from finding similar users or videos. We will discuss later in the serving section how our system handles the cold-start problem.
+- **Cannot handle niche interests.** It's difficult for CF to handle users with specialized or niche interests. CF relies upon similar users to make recommendations, and it might be difficult to find similar users with niche interests.
+
+#### Hybrid Filtering (Sequential)
+
+Input -> CF Based filtering -> Content based filtering -> Output
+
+## Data Preparation
+
+### Data engineering
+
+VIdeos
+
+| **Video ID** | **Length** | **Manual tags** | **Manual title**            | **Likes** | **Views** | **Language** |
+| :----------- | :--------- | :-------------- | :-------------------------- | :-------- | :-------- | :----------- |
+| 1            | 28         | Dog, Family     | Our lovely dog playing!     | 138       | 5300      | English      |
+| 2            | 300        | Car, Oil        | How to change your car oil? | 5         | 250       | Spanish      |
+| 3            | 3600       | Ouli, Vlog      | Ooneymoon to Bali           | 2200      | 255K      | Arabic       |
+
+User
+
+| **ID** | **Username** | **Age** | **Gender** | **City** | **Country** | **Language** |
+| :----- | :----------- | :------ | :--------- | :------- | :---------- | :----------- |
+|        |              |         |            |          |             |              |
+
+User-video interactions
+
+| **User ID** | **Video ID** | **Interaction type** | **Interaction value** | **Location (lat, long)** | **Timestamp** |
+| :---------- | :----------- | :------------------- | :-------------------- | :----------------------- | :------------ |
+| 4           | 18           | Like                 | -                     | 38.8951 -77.0364         | 1658451361    |
+| 2           | 18           | Impression           | 8 seconds             | 38.8951 -77.0364         | 1658451841    |
+| 2           | 6            | Watch                | 46 minutes            | 41.9241 -89.0389         | 1658822820    |
+| 6           | 9            | Click                | -                     | 22.7531 47.9642          | 1658832118    |
+| 9           | -            | Search               | Basics of clustering  | 22.7531 47.9642          | 1659259402    |
+| 8           | 6            | Comment              | Amazing video. Thanks | 37.5189 122.6405         | 1659244197    |
+
+### Feature engineering
+
+Discrete tags/numeric features: keep the number
+
+Text features: embedding
+
+Liked videos/Impressions/Watched videos: vision emebdding
+
+ 
