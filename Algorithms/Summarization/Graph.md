@@ -40,8 +40,6 @@ BFS(G, s):
                 q.enqueue(u)
 ```
 
-
-
 ### DFS
 
 ```python
