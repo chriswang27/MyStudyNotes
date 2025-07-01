@@ -725,7 +725,6 @@ Video encoder
   MRR=\frac{1}{m}\sum^m_{i=1} \frac{1}{rank_i}
   $$
   
-
 - Online metrics
   - **CTR**
   - **Video completion rate**
@@ -756,3 +755,251 @@ If there's time left at the end of the interview, here are some additional talki
 - Near-duplicate videos in the final output may negatively impact user experience. How to detect near-duplicate videos so we can remove them before displaying the results.
 - Text queries can be divided into head, torso, and tail queries. What are the different approaches commonly used in each case.
 - How to consider popularity and freshness when producing the output list.
+
+# 06 Video Recommendation System
+
+## Clarification
+
+**Candidate:** Can I assume the business objective of building a video recommendation system is to increase user engagement?
+**Interview**: That’s correct.
+
+**Candidate:** Does the system recommend similar videos to a video a user is watching right now? Or does it show a personalized list of videos on the user’s homepage?
+**Interviewer:** This is a homepage video recommendation system, which recommends personalized videos to users when they load the homepage.
+
+**Candidate:** Since YouTube is a global service, can I assume users are located worldwide and videos are in different languages?
+**Interviewer:** That’s a fair assumption.
+
+**Candidate:** Can I assume we can construct the dataset based on user interactions with video content?
+**Interviewer:** Yes, that sounds good.
+
+**Candidate:** Can a user group videos together by creating playlists? Playlists can be informative for the ML model during the learning phase.
+**Interviewer:** For the sake of simplicity, let’s assume the playlist feature does not exist.
+
+**Candidate:** How many videos are available on the platform?
+**Interviewer:** We have about 10 billion videos.
+
+**Candidate:** How fast should the system recommend videos to a user? Can I assume the recommendation should not take more than 200 milliseconds?
+**Interviewer:** That sounds good.
+
+## Frame the Problem as an ML Task
+
+### Defining the ML objective
+
+**Maximize the number of relevant videos.** This objective produces recommendations that are relevant to users. Engineers or product managers can define relevance based on some rules. Such rules can be based on implicit and explicit user reactions. For example, one definition could state a video is relevant if a user explicitly presses the "like" button or watches at least half of it. Once we define relevance, we can construct a dataset and train a model to predict the relevance score between a user and a video.
+
+### Specifying input and output
+
+- Input: user/user profile
+- Output: Ranked list of videos
+
+### Chossing the right ML category
+
+#### Content-based filtering
+
+1. User A engaged with videos X and Y in the past
+2. Video Z is similar to video X and video Y
+3. The system recommends video Z to user A
+
+Content-based filtering has pros and cons.
+
+**Pros:**
+
+- **Ability to recommend new videos.** With this method, we don't need to wait for interaction data from users to build video profiles for new videos. The video profile depends entirely upon its features.
+- **Ability to capture the unique interests of users.** This is because we recommend videos based on users' previous engagements.
+
+**Cons:**
+
+- **Difficult to discover a user's new interests.**
+- The method requires **domain knowledge**. We often need to engineer video features manually.
+
+#### Collaborative filtering (CF)
+
+The goal is to recommend a new video to user A.
+
+1. Find a similar user to A based on their previous interactions; say user B
+2. Find a video that user B engaged with but which user A has not seen yet; say video Z
+3. Recommend video Z to user A
+
+**Pros:**
+
+- **No domain knowledge needed.** CF does not rely on video features, which means no domain knowledge is needed to engineer features from videos.
+- **Easy to discover users' new areas of interest.** The system can recommend videos about new topics that other similar users engaged with in the past.
+- **Efficient.** Models based on CF are usually faster and less compute-intensive than content-based filtering, as they do not rely on video features.
+
+**Cons:**
+
+- **Cold-start problem.** This refers to a situation when limited data is available for a new video or user, meaning the system cannot make accurate recommendations. CF suffers from a cold-start problem due to the lack of historical interaction data for new users or videos. This lack of interactions prevents CF from finding similar users or videos. We will discuss later in the serving section how our system handles the cold-start problem.
+- **Cannot handle niche interests.** It's difficult for CF to handle users with specialized or niche interests. CF relies upon similar users to make recommendations, and it might be difficult to find similar users with niche interests.
+
+#### Hybrid Filtering (Sequential)
+
+Input -> CF Based filtering -> Content based filtering -> Output
+
+## Data Preparation
+
+### Data engineering
+
+VIdeos
+
+| **Video ID** | **Length** | **Manual tags** | **Manual title**            | **Likes** | **Views** | **Language** |
+| :----------- | :--------- | :-------------- | :-------------------------- | :-------- | :-------- | :----------- |
+| 1            | 28         | Dog, Family     | Our lovely dog playing!     | 138       | 5300      | English      |
+| 2            | 300        | Car, Oil        | How to change your car oil? | 5         | 250       | Spanish      |
+| 3            | 3600       | Ouli, Vlog      | Ooneymoon to Bali           | 2200      | 255K      | Arabic       |
+
+User
+
+| **ID** | **Username** | **Age** | **Gender** | **City** | **Country** | **Language** |
+| :----- | :----------- | :------ | :--------- | :------- | :---------- | :----------- |
+|        |              |         |            |          |             |              |
+
+User-video interactions
+
+| **User ID** | **Video ID** | **Interaction type** | **Interaction value** | **Location (lat, long)** | **Timestamp** |
+| :---------- | :----------- | :------------------- | :-------------------- | :----------------------- | :------------ |
+| 4           | 18           | Like                 | -                     | 38.8951 -77.0364         | 1658451361    |
+| 2           | 18           | Impression           | 8 seconds             | 38.8951 -77.0364         | 1658451841    |
+| 2           | 6            | Watch                | 46 minutes            | 41.9241 -89.0389         | 1658822820    |
+| 6           | 9            | Click                | -                     | 22.7531 47.9642          | 1658832118    |
+| 9           | -            | Search               | Basics of clustering  | 22.7531 47.9642          | 1659259402    |
+| 8           | 6            | Comment              | Amazing video. Thanks | 37.5189 122.6405         | 1659244197    |
+
+### Feature engineering
+
+Discrete tags/numeric features: keep the number
+
+Text features: embedding
+
+Liked videos/Impressions/Watched videos: vision emebdding
+
+## Model Development
+
+We examine two embedding-based models that are typically employed in CF-based or content-based recommenders:
+
+- Matrix factorization
+- Two-tower neural network
+
+### Matrix factorization
+
+##### Feedback matrix
+
+Also called a utility matrix, this is a matrix that represents users' opinions about videos. Figure 6.11 shows a binary user-video feedback matrix where each row represents a user, and each column represents a video.
+
+##### Matrix factorization model
+
+Matrix factorization is a simple embedding model. The algorithm decomposes the user-video feedback matrix into the product of two lower-dimensional matrices. One lower-dimensional matrix represents user embeddings, and the other represents video embeddings. In other words, the model learns to map each user into an embedding vector and each video into an embedding vector, such that their distance represents their relevance.
+
+![](../../../img/ML/ml design/5-1.png)
+
+##### Matrix factorization training
+
+As part of training, we aim to produce user and video embedding matrices so that their product is a good approximation of the feedback matrix.
+
+To learn these embeddings, matrix factorization first randomly initializes two embedding matrices, then iteratively optimizes the embeddings to decrease the loss between the "Predicted scores matrix" and the "Feedback matrix". 
+
+**A weighted combination of squared distance over observed and unobserved pairs**
+
+The first summation in the loss formula calculates the loss on the observed pairs, and the second summation calculates the loss on unobserved pairs. W*W* is a hyperparameter that weighs the two summations. It ensures one does not dominate the other in the training phase. This loss function with a properly tuned W works well in practice. We choose this loss function for the system.
+
+![](../../../img/ML/ml design/5-2.png)
+
+Before wrapping up matrix factorization, let’s discuss the pros and cons of this model.
+
+**Pros:**
+
+- Training speed: Matrix factorization is efficient during the training phase. This is because there are only two embedding matrices to learn.
+- Serving speed: Matrix factorization is fast at serving time. The learned embeddings are static, meaning that once we learn them, we can reuse them without having to transform the input at query time.
+
+**Cons:**
+
+- Matrix factorization only relies on user-video interactions. It does not use other features, such as the user's age or language. This limits the predictive capability of the model because features like language are useful to improve the quality of recommendations.
+- Handling new users is difficult. For new users, there are not enough interactions for the model to produce meaningful embeddings. Therefore, matrix factorization cannot determine whether a video is relevant to a user by computing the dot product between their embeddings.
+
+### Two-tower neural network
+
+A two-tower neural network comprises two encoder towers: the user tower and the video tower. The user encoder takes user features as input and maps them to an embedding vector (user embedding). The video encoder takes video features as input and maps them into an embedding vector (video embedding). The distance between their embeddings in the shared embedding space represents their relevance.
+
+Figure 6.19 shows the two-tower architecture. In contrast to matrix factorization, twotower architectures are flexible enough to incorporate all kinds of features to better capture the user's specific interests.
+
+![](../../../img/ML/ml design/5-3.png)
+
+##### Choosing the loss function
+
+Since the two-tower neural network is trained to predict binary labels, the problem can be categorized as a classification task. We use a typical classification loss function, such as cross-entropy, to optimize the encoders during training. 
+
+Let’s see the pros and cons of a two-tower neural network model.
+
+**Pros:**
+
+- **Utilizes user features.** The model accepts user features, such as age and gender, as input. These predictive features help the model make better recommendations.
+- **Handles new users.** The model easily handles new users as it relies on user features (e.g., age, gender, etc.).
+
+**Cons:**
+
+- **Slower serving.** The model needs to compute the user embedding at query time. This makes the model slower to serve requests. In addition, if we use the model for content-based filtering, the model needs to transform video features into video embedding, which increases the inference time.
+- **Training is more expensive.** Two-tower neural networks have more learning parameters than matrix factorization. Therefore, the training is more computeintensive.
+
+## Evaluation
+
+The system’s performance can be evaluated with offline and online metrics.
+
+### Offline metrics
+
+We evaluate the following offline metrics commonly used in recommendation systems.
+
+**Precision@k.** This metric measures the proportion of relevant videos among the top kk recommended videos. Multiple kk values (e.g., 1,5,101,5,10 ) can be used.
+
+**mAP.** This metric measures the ranking quality of recommended videos. It is a good fit because the relevance scores are binary in our system.
+
+**Diversity.** This metric measures how dissimilar recommended videos are to each other. This metric is important to track, as users are more interested in diversified videos. To measure diversity, we calculate the average pairwise similarity (e.g., cosine similarity or dot product) between videos in the list. A low average pairwise similarity score indicates the list is diverse.
+
+Note that using diversity as the sole measure of quality can result in misleading interpretations. For example, if the recommended videos are diverse but irrelevant to the user, they may not find the recommendations helpful. Therefore, we should use diversity with other offline metrics to ensure both relevance and diversity.
+
+### Online metrics
+
+In practice, companies track many metrics during online evaluation. Let's examine some of the most important ones:
+
+- Click-through rate (CTR)
+- The number of completed videos
+- Total watch time
+- Explicit user feedback
+
+## Serving
+
+![](../../../img/ML/ml design/5-4.png)
+
+#### Candidate generation
+
+The goal of candidate generation is to narrow down the videos from potentially billions, to thousands. We prioritize efficiency over accuracy at this stage and are not concerned about false positives.
+
+To keep candidate generation fast, we choose a model which doesn't rely on video features. In addition, this model should be able to handle new users. A two-tower neural network is a good fit for this stage. Once the computation is complete, it retrieves the most similar videos from the approximate nearest neighbor service. These videos are ranked based on similarity in the embedding space and are returned as the output.
+
+Users may be interested in videos for many reasons. For example, a user may choose to watch a video because it's popular, trending, or relevant to their location. To include those videos in the recommendations, it is common to use more than one candidate generation.
+
+#### Scoring
+
+Also known as ranking, scoring takes the user and candidate videos as input, scores each video, and outputs a ranked list of videos.
+
+At this stage, we prioritize accuracy over efficiency. To do so, we choose content-based filtering filtering and pick a model which relies on video features. A two-tower neural network is a common choice for this stage. Since there are only a handful of videos to rank in the scoring stage, we can employ a heavier model with more parameters. 
+
+#### Re-ranking
+
+This component re-ranks the videos by adding additional criteria or constraints. For example, we may use standalone ML models to determine if a video is clickbait. Here are a few important things to consider when building the re-ranking component:
+
+- Region-restricted videos
+- Video freshness
+- Videos spreading misinformation
+- Duplicate or near-duplicate videos
+- Fairness and bias
+
+## Other Talking Points
+
+If there is time left at the end of the interview, here are some additional talking points:
+
+- The exploration-exploitation trade-off in recommendation systems [9].
+- Different types of biases may be present in recommendation systems [10].
+- Important considerations related to ethics when building recommendation systems [11].
+- Consider the effect of seasonality - changes in users' behaviors during different seasons - in a recommendation system [12].
+- Optimize the system for multiple objectives, instead of a single objective [13].
+- How to benefit from negative feedback such as dislikes [14].
+- Leverage the sequence of videos in a user's search history or watch history [2].

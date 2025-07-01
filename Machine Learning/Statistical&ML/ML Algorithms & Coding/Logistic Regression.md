@@ -8,7 +8,7 @@ Sigmoid activation
 $$
 h(x)=\frac{1}{1+e^{-z}}=\frac{1}{1+e^{-wX+b}}
 $$
-The goal is to find weights w*w* and bias b*b* that **maximize** the likelihood of observing the data.
+The goal is to find weights w and bias b that **maximize** the likelihood of observing the data.
 
 Probability
 $$
@@ -32,6 +32,10 @@ $$
 $$
 \theta_j=\theta_j+\alpha l'_{w_j}\\=\theta_j+\alpha\frac{1}{n}\sum^n_{i=1}x^{(i)}(y^{(i)}-h_\theta(x^{(i)}))
 $$
+
+### Loss
+
+That gives the loss to minimize - **negative log-likelihood**
 
 ## Pseudo Code
 

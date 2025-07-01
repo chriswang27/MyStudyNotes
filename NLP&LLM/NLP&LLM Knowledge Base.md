@@ -71,7 +71,7 @@ Same key & value matrix for each head. In this way, size of KV cache: l * b * **
 
 Query matrix are also different across different heads. 
 
-Significant performance degradation
+Significant performance degradation.
 
 #### GQA
 
