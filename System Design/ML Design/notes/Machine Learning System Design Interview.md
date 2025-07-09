@@ -1003,3 +1003,387 @@ If there is time left at the end of the interview, here are some additional talk
 - Optimize the system for multiple objectives, instead of a single objective [13].
 - How to benefit from negative feedback such as dislikes [14].
 - Leverage the sequence of videos in a user's search history or watch history [2].
+
+# 8 Ad Click prediction on social platforms
+
+## Clarification
+
+Here is a typical interaction between a candidate and an interviewer.
+
+**Candidate**: Can I assume the business objective of building an ad prediction system is to maximize revenue?
+**Interviewer:** Yes, that’s correct.
+
+**Candidate:** There are different types of ads, such as video and image ads. In addition, ads can be displayed in different sizes and formats, like users’ timelines, pop-up ads, etc. For simplicity, can I assume ads are placed on users’ timelines only, and every click generates the same revenue?
+**Interviewer:** That sounds good.
+
+**Candidate:** Can the system show the same ad to the same user more than once?
+**Interviewer:** Yes, we can show an ad more than once. Sometimes, an ad turns into a click after multiple impressions. In reality, companies have a “fatigue period”, that is, they don’t show the same ad to the same user for X days if the user repeatedly ignores it. For simplicity, assume we have no fatigue period.
+
+**Candidate:** Do we support the “hide this ad” feature? How about “block this advertiser”? These kinds of negative feedback help us to detect irrelevant ads.
+**Interviewer:** Good question. Let’s assume users can hide an ad they don’t like. “Block this advertiser” is an interesting feature, but we don’t need to support it for now.
+
+**Candidate:** Would it be okay to assume that the training dataset should be constructed using user and ad data, and the labels should be based on user-ad interactions?
+**Interviewer:** Sure.
+
+**Candidate:** We can construct positive training data points via user clicks, but how do we generate negative data points? Can we assume any impression that is not clicked is a negative data point? What if the user scrolls fast and doesn’t spend time seeing the ad? What if we count an impression as negative, but eventually, the user clicks on it?
+**Interviewer:** These are excellent questions. What are your thoughts?
+
+**Candidate:** If an ad is visible on a user’s screen for a certain duration but not clicked, we can count it as a negative data point. An alternative approach would be to assume impressions are negative until a click is observed. In addition, we can rely on negative feedback such as “hide this ad” to label negative data points.
+**Interviewer:** Makes sense! In practice, we might use other complex techniques to label negative data points . For this interview, let’s proceed with your suggestions.
+
+**Candidate:** In ad click prediction systems, it’s critical for the model to learn from new interactions continuously. Is it fair to assume continual learning is a necessity here?
+**Interviewer:** Great point. Experiments have shown that even a 5-minute delay in updating models can damage performance [1].
+
+## Frame the Problem as an ML task
+
+### Defining ML objective
+
+Goal: increase revenue by showing users ads they are more likely to click on. This can be converted into the following ML objective: predicting if an ad will be clicked. This is due to the fact that by correctly predicting click probabilities, the system can display relevant ads to users, which leads to an increase in revenue.
+
+### Specifying input and output
+
+- Input: user and ads
+- Output: a ranked list of ads based on click probabilities.
+
+### Choosing the right ML category
+
+Employs a binary classification model.
+
+## Data Preparation
+
+### Data engineering
+
+#### Ads
+
+| Ad ID | Advertiser ID | Ad group ID | Campaign ID | Category  | Subcategory |       Images or Videos        |
+| :---: | :-----------: | :---------: | :---------: | :-------: | :---------: | :---------------------------: |
+|   1   |       1       |      4      |      7      |  travel   |    hotel    | http: //cdn.mysite.com/u1.jpg |
+|   2   |       7       |      2      |      9      | insurance |     car     | http: //cdn.mysite.com/t3.mp4 |
+
+#### Users
+
+|  ID  | Username | Age  | Gender | City | Country | Language | Time zone |
+| :--: | :------: | :--: | :----: | :--: | :-----: | :------: | :-------: |
+|      |          |      |        |      |         |          |           |
+
+#### User-Ad interation
+
+| User ID | Ad ID | Interaction type | Dwell time | Location (lat, long) | Timestamp  |
+| :-----: | :---: | :--------------: | :--------: | :------------------: | :--------: |
+|   11    |   6   |    Impression    |    5sec    |   38.8951 -77.0364   | 165845053  |
+|   11    |   7   |      Click       |     -      |   41.9241 -89.0389   | 1658451365 |
+
+### Feature engineering
+
+Our aim in this section is to engineer features that will assist us in predicting user clicks.
+
+#### Ad features
+
+- IDs
+  - These are advertiser ID, campaign ID, ad group ID, ad ID,etc.
+  - **Why is it important?** The IDs represent the advertiser, the campaign, the ad group, and the ad itself. These IDs are used as predictive features to capture the unique characteristics of different advertisers, campaigns, ad groups, and ads.
+  - **How to prepare it?** The embedding layer converts sparse features, such as IDs, into dense feature vectors. Each ID type has its own embedding layer.
+
+- Image/Video
+  - **Why is it important?** A video or image in a post is another signal that can help us predict what the ad is about. For example, an image of an airplane may indicate the ad is related to travel.
+  - **How to prepare it?** The images or videos are first preprocessed. After that, we use a pre-trained model such as SimCLR [3] to convert unstructured data into a feature vector.
+
+- Ad category and subcategory
+  - **Why is it important?** It helps the model to understand which category the ad belongs to.
+  - **How to prepare it?** These are manually provided by the advertiser based on a predefined list of categories and subcategories. To learn more about preparing textual data, read Chapter 4, YouTube Video Search.
+
+- Impressions and click numbers
+  - Total impression/clicks on the ad
+  - Total impressions/clicks on ads supplied by an advertiser
+  - Total impressions of the campaign
+
+#### User-Ad interaction features
+
+- Clicked ads
+  - Ads previously clicked by the user.
+  - **Why is it important?** Previous clicks indicate a user's interests. For example, when a user clicks on lots of insurance-related ads, it suggests they are likely to click on a similar ad again.
+  - **How to prepare it?** In the same way as described in "Ad features".
+
+- User’s historical engagement statistics
+
+  - These are the user’s historical engagement numbers, such as their total ad views and ad click rate.
+  - **Why is it important?** An individual's historical engagement is a good predictor of future engagement. In general, users are more likely to click on ads in the future, if they clicked on ads frequently in the past.
+
+  - **How to prepare it?** Engagement statistics are represented as numerical values. To prepare them, we scale their values into a similar range.
+
+A challenge: many features, such as categories and advertiser ID, are high cardinality features - many features will be null
+
+## Model development
+
+### Model selection
+
+- Logistic regression
+- Feature crossing + logistic regression
+- Gradient boosted decision trees
+- Gradient boosted decision trees + logistic regression
+- Neural networks
+- Deep & Cross networks
+
+#### Logistic regression
+
+- Pros: easy to train, fast inference
+- Cons: cannot solve non-linear problem; cannot capture feature dependence
+
+#### Feature crossing + logistic regression
+
+Feature crossing is a technique used in ML to create new features from existing features. It involves combining two or more existing features into one new feature by taking their product, sum, or another combination. It is possible to capture nonlinear interactions between the original features in this way, which can improve the performance of ML models.
+
+- Manually add new features to the existing features based on prior knowledge.
+- Use the original and the crossed features as input for the LR model.
+- Cons: manual process, domain knowledge, not work for higher order interactions.
+
+#### GBDT
+
+- Pros: interpretable
+- Cons: not suited for continual learning; too many features to consider
+
+#### Neual Network
+
+- Single NN: freatures -> NN -> probability
+- Two-tower: User -> NN -> User embedding; Ad -> NN -> Ad embedding; User embedding * Ad embedding -> probability
+
+- Cons: not enough data with features to train; difficult to capture all feature interactions
+
+#### Deep & Cross Network
+
+In 2017, Google proposed an architecture named DCN [6] to find feature interactions automatically. This addresses the challenges of the manual feature crossing method. The following two parallel networks are used in this method:
+
+- **Deep network:** Learns complex and generalizable features using a Deep Neural Network (DNN) architecture.
+- **Cross network:** Automatically captures feature interactions and learns good feature crosses.
+
+The outputs of deep network and cross network are concatenated to make a final prediction.
+
+### Model training
+
+#### Constructing dataset
+
+For every ad impression, we construct a new data point. The input features are computed from the user and the ad. A label is assigned to the data point, based on the following strategy:
+
+- **Positive label:** if the user clicks the ad in less than t seconds after the ad is shown, we label the data point as "positive". Note that t*t* is a hyperparameter and can be tuned via experimentation.
+- **Negative label:** if the user does not click the ad in less than t*t* seconds, we label the data point as "negative".
+
+#### Choosing the loss function
+
+Since we are training a binary classification model, we choose cross-entropy as a classification loss function.
+
+## Evaluation
+
+### Offline metrics
+
+- Cross Entropy
+  $$
+  H(p, q)=-\sum^C_{c=1}p_c\log q_c
+  $$
+
+  - Better system -> closer to 0
+
+### Online metrics
+
+- CTR
+- Hide rate
+- Revenue lift
+
+## Serving
+
+![](../../../img/ML/ml design/8-1.png)
+
+The prediction pipeline takes a query user as input and outputs a list of ads ranked by their click probabilities. Since some of the features which the model relies upon are dynamic, we cannot use batch prediction. Instead, requests are served as they arrive using online prediction.
+
+As we've seen in previous chapters, a two-stage architecture is used in the prediction pipeline. First, we employ a candidate generation service to efficiently narrow down the available pool of ads to a small subset of ads. In this case, we use the ad targeting criteria often provided by advertisers, such as target age, gender, and country.
+
+Next, we employ a ranking model which fetches the candidate ads from the candidate generation service, ranks them based on click probability, and outputs the top ads. This component interacts with the same feature store and online feature computation component. Once the static and dynamic features are obtained, the ranking service uses the model to get a predicted click probability for each candidate ad. These probabilities are used to rank the ads and to output those with the highest click probability.
+
+Finally, a re-ranking service modifies the list of ads by incorporating additional logic and heuristics. For example, we can increase the diversity of ads by removing very similar ads from the list.
+
+## Other Talking Points
+
+If there is time left at the end of the interview, here are some potential talking points you might discuss with the interviewer:
+
+- In ranking and recommendation systems, it's important to avoid data leakage [12][13][12][13]
+- The model needs to be calibrated in ad click prediction systems. Discuss model calibration and techniques for calibrating a model [14].
+- We've described why continuous learning is necessary for ad click prediction systems. However, continual learning on new data may lead to catastrophic forgetting. Discuss what catastrophic forgetting is and what common solutions are [16].
+
+# 10 Personalized News Feed
+
+## Clarification
+
+Here is a typical interaction between a candidate and an interviewer.
+
+**Candidate:** Can I assume the motivation for a personalized news feed is to keep users engaged with the platform?
+**Interviewer:** Yes, we display sponsored ads between posts, and more engagement leads to increased revenue.
+
+**Candidate:** When a user refreshes their timeline, we display posts with new activities to the user. Can I assume this activity consists of both unseen posts and posts with unseen comments?
+**Interviewer:** That is a fair assumption.
+
+**Candidate:** Can a post contain textual content, images, video, or any combination?
+**Interviewer:** It can be any combination.
+
+**Candidate:** To keep users engaged, the system should place the most engaging content at the top of timelines, as people are more likely to interact with the first few posts. Does that sound right?
+**Interviewer:** Yes, that's correct.
+
+**Candidate:** Is there a specific type of engagement we are optimizing for? I assume there are different types of engagement, such as clicks, likes, and shares.
+**Interviewer:** Great question. Different reactions have different values on our platform. For example, liking a post is more valuable than only clicking it. Ideally, our system should consider major reactions when ranking posts. With that, I'll leave you to define "engagement" and choose what your model should optimize for.
+
+**Candidate:** What are the major reactions available on the platform? I assume users can click, like, share, comment, hide, block another user, and send connection requests. Are there other reactions we should consider?
+**Interviewer:** You mentioned the major ones. Let's keep our focus on those.
+
+**Candidate:** How fast is the system supposed to work?
+**Interviewer:** We expect the system to display the ranked posts quickly after users refresh their timelines or open the application. If it takes too long, users will get bored and leave. Let's assume the system should display the ranked posts in less than 200 milliseconds (ms).
+
+**Candidate:** How many daily active users do we have? How many timeline updates do we expect each day?
+**Interviewer:** We have almost 3 billion users in total. Around 2 billion are daily active users who check their feeds twice a day.
+
+## Frame the problem as an ML task
+
+### Defining the ML objective
+
+We use both implicit (click, time spent) and explicit reactions (like, share, comment, dislike) to determine how engaged a user is with a post. In particular, we assign a weight to each reaction, based on how valuable the reaction is to us. We then optimize the ML system to maximize the weighted score of reactions.
+
+Table 10.1 shows the mapping between different reactions and weights. As you can see, pressing the "like" button has more weight than a click, while a share is more valuable than a like. In addition, negative reactions such as hide and block have a negative weight. Note that these weights can be chosen based on business needs.
+
+### Input and output
+
+- Input: user
+- Output: ranked unseen posts
+
+### Chossing the right ML category
+
+Ranking -> Binary classifiers -> One classifier for each reactions
+
+Once these probabilities are predicted, we compute the engagement score. 
+
+## Data Preparation
+
+### Data Engineering
+
+#### Users
+
+The user data schema is shown below.
+
+|  ID  | Username | Age  | Gender | City | Country | Language | Time zone |
+| :--: | :------: | :--: | :----: | :--: | :-----: | :------: | :-------: |
+|      |          |      |        |      |         |          |           |
+
+#### Post
+
+| Author ID |              Textual Content               |      Hashtags       |      Mentions      |       Images or videos        | Timestamp  |
+| :-------: | :----------------------------------------: | :-----------------: | :----------------: | :---------------------------: | :--------: |
+|     5     | Today at our fav place with my best friend | life_is_good, happy |       hs2008       |               -               | 1658450539 |
+|     1     |      It was the best trip we ever had      |  Travel, Maldives   | Alexish, shan.tony | htcdn.mysite.com/maldives.jpg | 1658451341 |
+
+#### User-post interactions
+
+Table 10.4 shows user-post interaction data.
+
+| User ID | Post ID | Interaction type | Interaction value | Location (lat, long) | Timestamp  |
+| :-----: | :-----: | :--------------: | :---------------: | -------------------: | :--------: |
+|    4    |   18    |       Like       |         -         |     38.8951 -77.0364 | 1658450539 |
+|    4    |   18    |      Share       |      User 9       |     41.9241 -89.0389 | 1658451365 |
+|    9    |   18    |     Comment      | You look amazing  |      22.7531 47.9642 | 1658435948 |
+|    9    |   18    |      Block       |         -         |      22.7531 47.9642 | 1658451849 |
+|    6    |    9    |    Impression    |                   |     37.5189 122.6405 | 1658821820 |
+
+##### Friendship
+
+The friendship table stores data of connections between users. We assume users can specify their close friends and family members. Table 10.5 shows examples of friendship data.
+
+| User ID 1 | User ID 2 | Time when friendship was formed | Close friend | Family member |
+| :-------: | :-------: | :-----------------------------: | :----------: | :-----------: |
+|    28     |     3     |           1558451341            |     True     |     False     |
+|     7     |    39     |           1559281720            |    False     |     True      |
+|    11     |    25     |           1559312942            |    False     |     False     |
+
+### Feature engineering
+
+ In particular, we engineer features from each of the following categories:
+
+- Post features
+- User-post interaction features
+- User-author affinities
+
+#### Post features
+
+- Textual content and hashtag
+- Images or video
+- Reactions: number of likes, shares, ... - Need to scale
+- Post's age - quantize into buckets
+
+#### User-post interaction features
+
+- User-post historical interactions: All posts liked by a user are represented by a list of post IDs. The same logic applies to shares and comments.
+  - **Why is it important?** Users' previous engagements are usually helpful in determining their future engagements.
+  - **How to prepare it?** Extract features from each post that the user interacted with.
+
+- Being mentioned in a post: This means whether or not the user is mentioned in a post. Why is it important? Users usually pay more attention to posts that mention them.
+  - This feature is represented by a binary value. If a user is mentioned in the post, this feature is 1 , otherwise 0 .
+
+#### User-author affinities
+
+- Like/click/comment/share rate
+- Friendship degree
+
+## Model development
+
+### Model selection
+
+Neural network - work well with unstructured data, compatible with embeddings
+
+Two options
+
+- N indepdent NNs
+  - 1 for each reaction
+  - Cons: compute-intensive, data sparity for less frequent reactions
+- 1 multitask NN
+
+#### Improving for passive users
+
+many users use the platform passively, meaning they do not interact much with the content on their timelines. For such users, the current DNN model will predict very low probabilities for all reactions, since they rarely react to posts. 
+
+Solution: Add two implicit reactions
+
+- Time spent: regression task
+- Skip rate: classification task
+
+### Model training
+
+#### Constructing dataset
+
+the number of negative data points is usually much higher than positive data points. To avoid having an imbalanced dataset, we create negative data points to equal the number of positive data points. 
+
+#### Chooing the loss function
+
+- Classification: CE
+- Regression: MSE
+
+## Evaluation
+
+### Offline
+
+- Evaluate a user-ad pair prediction - precision, recall
+- Evaluate user-ranked ads list - mAP, nDCG
+
+### Online
+
+- CTR
+- Reaction rate
+- DAU
+- Time spent
+
+## Serving
+
+Similar to Ad clieck prediction
+
+## Other Talking Points
+
+If there is time left at the end of the interview, here are some additional talking points:
+
+- How to handle posts that are going viral [15].
+- How to personalize the news feed for new users [16].
+- How to mitigate the positional bias present in the system [17].
+- How to determine a proper retraining frequency [18].
+
