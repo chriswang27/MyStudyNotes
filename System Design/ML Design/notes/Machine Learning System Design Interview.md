@@ -756,6 +756,130 @@ If there's time left at the end of the interview, here are some additional talki
 - Text queries can be divided into head, torso, and tail queries. What are the different approaches commonly used in each case.
 - How to consider popularity and freshness when producing the output list.
 
+# 05 Harmful Content Detection
+
+## Clarification
+
+**Candidate:** Does the system detect both harmful content and bad actors?
+**Interviewer:** Both are equally important. For simplicity, let's focus on detecting harmful content only.
+
+**Candidate:** Should a post only contain text, or are images and videos allowed?
+**Interviewer:** The content of a post can be text, image, video, or any combination of these.
+
+**Candidate:** What languages are supported? Is it English only?
+**Interviewer:** The system should detect harmful content in various languages. For simplicity, assume we can use a pre-trained multilingual model to embed the textual content.
+
+**Candidate**: Which specific categories of harmful content are we looking to identify? I can think of violence, nudity, hate speech, misinformation, etc. Are there other harmful categories to consider?
+**Interviewer:** Great, you brought up the major ones. Misinformation is more complex and controversial. For simplicity, let's not focus on misinformation.
+
+**Candidate**: Are there any human annotators available to label posts manually?
+**Interviewer:** The platform receives more than 500 million posts each day. Asking humans to label all of them would be very expensive and time-consuming. However, you can assume human annotation is available to label a limited number of posts, say 10,000 per day.
+
+**Candidate:** Allowing users to report harmful content is beneficial for understanding where the system is failing. Can I assume the system has that feature?
+**Interviewer:** Good point. Yes, users can report harmful posts.
+
+**Candidate:** Should we explain why a post is deemed harmful and removed?
+**Interviewer:** Yes. Explaining to users why we remove a post is essential. It helps users to ensure they align their future posts with the guidelines.
+
+**Candidate:** What is the system's latency requirement? Do we need a real-time prediction, i.e., the system detects harmful content immediately and blocks it, or can we rely on batch prediction, i.e., detecting harmful content offline hourly or daily?
+**Interviewer:** This is a very important question. What are your thoughts?
+
+**Candidate:** In my opinion, the requirements for different harmful content might vary. For example, violent content may require real-time solutions, while for others, late detection may work.
+**Interviewer:** Those are fair assumptions.
+
+## Frame the Problem as an ML Task
+
+### ML Objective
+
+We define our ML objective as accurately predicting harmful posts.
+
+### Input and Output
+
+- Input: post (multi-modal)
+- Output: probability that the post is harmful
+
+### Choosing the right ML category
+
+In this section, we examine the following ML category options:
+
+- Single binary classifier
+- One binary classifier per harmful class
+  - Pros: well explained; models can be developed and replaced separately
+  - Cons: multiple models to maintain
+- Multi-label classifier
+- Multi-task classifier: one head for each type of harmfulness
+  - Pros: First, it is not expensive to train or maintain since we use a single model. Second, the shared layers transform the features in a way that is beneficial for each task. This prevents redundant computations and makes multi-task classification efficient. Lastly, the training data for each task contributes to the learning of other tasks. This is especially helpful when limited data is available for a particular task.
+
+## Data Preparation
+
+### Data engineering
+
+- Users
+- Posts
+  - Including text, pictures, audio, etc
+- User-Post interactions
+  - Like, comment, dislike, report, ...
+
+### Feature engineering
+
+- **The number of likes, shares, comments, and reports:** We usually scale these numerical values to speed up convergence during model training.
+
+- ##### Author features
+
+  The author's past interactions can be used to determine if the post is harmful or not. Let's engineer features related to the post author.
+
+  **Author's violation history**
+
+  - **Number of violations:** This is a numerical value representing the number of times the author violated the guidelines in the past.
+  - **Total user reports:** A numerical value representing the number of times users reported the author's posts.
+  - **Profane words rate:** This is a numerical value representing the rate of profane words used in the author's previous posts and comments. A predefined list of profane words is used to determine whether a word is profane.
+
+  **Author's demographics**
+
+  - **Age:** A user's age is one of the most important predictive features.
+  - **Gender:** This categorical feature represents the user's gender. We use one-hot encoding to represent gender.
+  - **City and country:** Both the city and country take many distinct values. To represent the features, we use an embedding layer to convert city and country into feature vectors. Note that one-hot encoding is not an efficient method to represent the city and country because their representations would be long and sparse.
+
+  **Account information**
+
+  - **Number of followers and followings**
+  - **Account age:** This is a numerical value representing the age of the author's account. This is a predictive feature as accounts with a lower age are more likely to be spam or to violate integrity.
+
+  ##### Contextual information
+
+  - **Time of day:** This is the time of day when the author made a post. We bucketize this into multiple categories, such as morning, noon, afternoon, evening or night. We use one-hot encoding to represent this feature.
+
+## Model Development
+
+### Model Selection
+
+NN
+
+### Model Training
+
+#### Constructing Dataset
+
+To train the multi-task classification model, we first need to construct the dataset. The dataset comprises model inputs (features) and outputs (labels) that the model is expected to predict. To construct inputs, we process posts offline in batches and compute fused features as described earlier. These features can be stored in a feature store for future training. In order to create labels for each input, we have two options:
+
+- Hand labeling
+- Natural labeling
+
+With hand labeling, human contractors label posts manually. This option produces accurate labels, but it is expensive and time-consuming. With natural labeling, we rely on user reports to label posts automatically. While this option results in noisier labels, labels are produced more quickly. For the evaluation dataset, we use hand labeling to prioritize the accuracy of labels, and for the training dataset, we use natural labeling to prioritize labeling speed.
+
+#### Choosing loss function
+
+Binary CR for each category. L = L1 + L2 + ...
+
+## Evaluation
+
+Offline: Precision, Recall
+
+Online: **Harmful impressions.** **Valid appeals.** 
+
+## Serving
+
+![6-1](../../../img/ML/ml design/6-1.png)
+
 # 06 Video Recommendation System
 
 ## Clarification
@@ -1786,3 +1910,190 @@ If there is time left at the end of the interview, here are some additional talk
 - How to mitigate the positional bias present in the system [17].
 - How to determine a proper retraining frequency [18].
 
+# 11 People you may know
+
+## Clarification
+
+**Candidate:** Can I assume the motivation for building the PYMK feature is to help users discover potential connections and grow their network?
+**Interviewer:** Yes, that’s a good assumption.
+
+**Candidate:** To recommend potential connections, a huge list of factors must be considered, such as location, educational background, work experience, existing connections, previous activities, etc. Should I focus on the most important factors, such as educational background, work experience, and the user’s social context?
+**Interviewer:** That sounds good.
+
+**Candidate:** On LinkedIn, two people are friends if – and only if – each is a friend of the other. Is that correct?
+**Interviewer:** Yes, friendship is symmetrical. When someone sends a connection request to another user, the recipient needs to accept the request for the connection to be made.
+
+**Candidate:** What’s the total number of users on the platform? How many of them are daily active users?
+**Interviewer:** We have nearly 1 billion users and 300 million daily active users.
+
+**Candidate:** How many connections does an average user have?
+**Interviewer:** 1,000 connections.
+
+**Candidate:** The social graph of most users is not very dynamic, meaning their connections don’t change significantly over a short period. Can I make this assumption when designing PYMK?
+**Interviewer:** That’s an excellent point. Yes, it’s a reasonable assumption.
+
+## Frame the problem as an ML task
+
+### Defining the ML objective
+
+A common ML objective in PYMK systems is to maximize the number of formed connections between users. This helps users to grow their networks quickly.
+
+### Specifying the system’s input and output
+
+The input to the PYMK system is a user, and the outputs are a list of connections ranked by relevance to the user. 
+
+### Chossing the right ML category
+
+#### Pointwise LTR
+
+We employ a binary classification model which takes two users as input and outputs the probability of the given pair forming a connection. However, this approach has a major drawback; since the model's inputs are two distinct users, it doesn't consider the available social context. While this does simplify things, leaving out information about a user's connections might make predictions less accurate.
+
+##### Edge prediction
+
+In this approach, we supplement the model with graph information. This enables the model to rely on the additional knowledge extracted from the social graph, to predict whether an edge exists between two nodes.
+
+More formally, we use a model that takes the entire social graph as input, and predicts the probability of an edge existing between two specific nodes. To rank potential connections for user A, we compute the edge probabilities between user A and other users, and use these probabilities as the ranking criteria.
+
+In addition to the typical features that the model utilizes, the model also relies on additional knowledge extracted from the social graph to predict whether an edge exists between two nodes.
+
+![11-1](../../../img/ML/ml design/11-1.png)
+
+## Data Preparation
+
+### Data engineering
+
+In this section, we discuss the raw data available:
+
+- Users
+
+| **User ID** | **School** | **Degree** |       **Major**        | **Start date** | **End date** |
+| :---------: | :--------: | :--------: | :--------------------: | :------------: | :----------: |
+|     11      |  Waterloo  |    M.Sc    |    Computer Science    |  August 2015   |   May 2017   |
+|     11      |  Harvard   |    M.Sc    |        Physics         |    May 2004    | August 2006  |
+|     11      |    UCLA    | Bachelors  | Electrical Engineering |    Sep 2022    |      -       |
+
+- Connections
+
+A simplified example of connection data is shown in Table 11.2. Each row represents a connection between two users and when the connection was formed.
+
+| User ID 1 | User ID 2 | Timestamp when the connection was formed |
+| :-------: | :-------: | :--------------------------------------: |
+|    28     |     3     |                1658451341                |
+|     7     |    39     |                1659281720                |
+|    11     |    25     |                1659312942                |
+
+- Interactions
+
+| User ID |  Interaction type   |      Interaction value       | Timestamp  |
+| :-----: | :-----------------: | :--------------------------: | :--------: |
+|   11    | Connection request  |          user_id_8           | 1658450539 |
+|    8    | Accepted connection |          user_id_11          | 1658451341 |
+|   11    |       Comment       | [user_id_4, Very insightful] | 1658451365 |
+|    4    |       Search        |        "Scott Belsky"        | 1658435948 |
+|   11    |    Profile view     |          user_id_21          | 1658451849 |
+
+### Feature engineering
+
+###### **Demographics: age, gender, city, country, etc.**
+
+Demographic data helps determine if two users are likely to form a connection. Users tend to connect with others who have similar demographics.
+
+It's common to have missing values in demographic data. To learn more about how to handle missing values, refer to the "Introduction and Overview" chapter.
+
+###### **The numbers of connections, followers, following, and pending requests**
+
+This information is important as users are more likely to connect with someone with lots of followers or connections, compared to a user with few connections.
+
+###### **Account’s age**
+
+Accounts created very recently are less reliable than those that have existed for longer. For example, if an account was created yesterday, it's more likely to be a spam account. So, it may not be a good idea to recommend it to users.
+
+###### **The number of received reactions**
+
+These are numerical values representing the total number of reactions received, such as likes, shares, and comments over a certain period, like one week. Users tend to connect with more active users on the platform, who receive more interactions from other users.
+
+##### User-user affinities
+
+The affinity between two users is a good signal to predict if they will connect. Let’s look at some important features which capture user-user affinities.
+
+###### **Education and work affinity**
+
+- **Schools in common:** Users tend to connect with others who attended the same school.
+- **Contemporaries at school:** Overlapping years at school increases the likelihood of two users connecting. For example, users might want to connect with someone who attended school XX the same time they did.
+- **Same major:** A binary feature representing whether two users had the same major in school.
+- **Number of companies in common:** Users may connect with people who have worked at the same companies.
+- **Same industry:** A binary feature representing whether the two users work in the same industry.
+
+###### Social affinity
+
+- **Profile visits:** The number of times a user looks at the profile of another user.
+- **Number of connections in common, aka mutual connections:** If two users have many common connections, they are more likely to connect. This feature is one of the most important predictive features [2].
+- **Time discounted mutual connections:** This feature weighs mutual connections by how long they have existed. Let's go through an example to understand the reasoning behind this feature.
+
+## Model Development
+
+### Model selection
+
+GNN/GCN
+
+### Model Training
+
+To train a GNN model, we provide the model with a snapshot of the social graph at time t. The model predicts the connections which will form at time t+1. Let's examine how to construct the training data.
+
+#### Constructing dataset
+
+To construct the dataset, we do the following:
+
+1. Create a snapshot of the graph at time t
+
+   The first step in constructing training data is to create input for the model. Since a GNN model expects a social graph as input, we create a snapshot of the social graph at time t*t* using the available raw data. Figure 11.1111.11 shows an example of the graph at time t*t*.
+
+2. Compute initial node features and edge features of the graph
+
+   We extract the user's features, such as age, gender, account age, number of connections, etc. These are used as the nodes' initial feature vectors. Similarly, we extract user-user affinity features and employ them as the initial feature vectors of the edges. 
+
+3. Create labels
+
+   In this step, we create labels that the model is expected to predict. We use the graph snapshot at time t+1*t*+1 to determine positive or negative labels. Let's take a look at a concrete example.
+
+   ![11-2](../../../img/ML/ml design/11-2.png)
+
+As shown in Figure 11.14, positive and negative labels are created depending on whether a new edge forms at t+1*t*+1. In particular, we label a pair of nodes as positive when they connect at t+1*t*+1. Otherwise, they are labeled as negative.
+
+![11-3](../../../img/ML/ml design/11-3.png)
+
+## Evaluation
+
+##### GNN model
+
+Since the GNN model predicts the presence of edges, we can think of it as a binary classification model. ROC-AUC metric is used to measure the performance of the model.
+
+##### PYMK system
+
+We extensively discuss choosing the right offline metrics for ranking and recommendation systems in previous chapters, so don't go into detail here. In our system, a user will either connect with a recommended connection or discard it. Due to this binary nature (connect or not), mAPmAP is a good choice.
+
+#### Online metrics
+
+In practice, companies track lots of online metrics to measure the impact of PYMK systems. Let's explore two of the most important metrics:
+
+- The total number of connection requests sent in the last X days
+- The total number of connection requests accepted in the last X days
+
+**The total number of connection requests sent in the last X days.** This metric helps us understand if the model increases or decreases the number of connection requests. For example, if a model leads to a 5%5% increase in the total number of sent connection requests, we can assume the model has a positive impact on the business objective.
+
+However, this metric has a major drawback. A new connection forms between two users only when the recipient accepts a request to connect. For example, a user may send 1,000 connection requests, but recipients accept only a small percentage. This metric might not correctly reflect the actual growth of the users' network. Now, let's address this drawback with the next metric.
+
+**The total number of connection requests accepted in the last X days.** As a new connection forms only when the recipient accepts the sender's request, this metric accurately reflects the real growth of the users' network.
+
+## Serving
+
+![11-4](../../../img/ML/ml design/11-4.png)
+
+## Other Talking Points
+
+If there's time left at the end of the interview, here are some additional talking points:
+
+- Personalized random walk [8] is another method often used to make recommendations. Since it's efficient, it is a helpful way to establish a baseline.
+- Bias issue. Frequent users tend to have greater representation in the training data than occasional users. The model can become biased towards some groups and against others due to uneven representation in the training data. For example, in the PYMK list, frequent users might be recommended to other users at a higher rate. Subsequently, these users can make even more connections, making them even more represented in the training data [9].
+- When a user ignores recommended connections repeatedly, the question arises of how to take them into account in future re-ranks. Ideally, ignored recommendations should have a lower ranking [9].
+- A user may not send a connection request immediately when we recommend it to them. It may take a few days or weeks. So, when should we label a recommended connection as negative? In general, how would we deal with delayed feedback in recommendation systems [10]?
