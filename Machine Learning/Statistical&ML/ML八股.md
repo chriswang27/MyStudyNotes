@@ -21,7 +21,7 @@ ML八股
 
 但也更容易"记住"训练数据中的噪声(Overfit) -> Poor generalization -> 高variance -> Bad on test set
 
-### Regularization
+#### Regularization
 
 - L1
 
@@ -41,10 +41,8 @@ ML八股
   - Use L2 if 
 
     - All features are expected to be relevant.
-
-      You want to **distribute the weight** more evenly.
-
-      You care more about **numerical stability and generalization** than sparsity.
+  - You want to **distribute the weight** more evenly.
+    - You care more about **numerical stability and generalization** than sparsity.
 
 - Work with over-parameterization
   - A model is **over-parameterized** when it has **more parameters than training data** (e.g., deep neural networks with millions of weights and only thousands of examples). This means the model can **perfectly fit (memorize)** the training data — even noise or random labels.
@@ -260,9 +258,9 @@ Common Candidate Sampling Algorithms:
 
         - Model Disagreement or Uncertainty-Based Sample*
 
-#### Metrics & Eval
+### Metrics, Eval and Loss Function
 
-##### Overfitting
+#### Overfitting
 
 - Sympotoms
 
@@ -277,7 +275,7 @@ Common Candidate Sampling Algorithms:
   - Get more training data
   - Use cross-validation
 
-##### F1 Score
+#### F1 Score
 
 - Why F1 is better than Accuracy?
 
@@ -290,7 +288,7 @@ Common Candidate Sampling Algorithms:
   - Macro F1 - treat each classes equally
   - Micro F1 - treat each samples equally -> **Favors frequent classes**, good for imbalance.
 
-##### Cross Entropy
+#### Cross Entropy
 
 - Cross-Entropy is Designed for Probabilities
 
@@ -305,5 +303,26 @@ Common Candidate Sampling Algorithms:
 
 - CE and negative log-likelihood are equivalent for binary classification. 
   $$
-  L_{NLL}=-\log P(y|\hat y)=-[y\log y+(1-y)\log(1-\hat y)]
+  L_{NLL}=-\log P(y|x)=-[y\log \hat y+(1-y)\log(1-\hat y)]
   $$
+  
+  - Still holds for multi-class classification
+  - In Pytorch, `nn.CrossEntropyLoss = LogSoftmax + NLLLoss`
+
+- For logistic regression, CE is preferred over MSE because
+  - Logistic regression models the **probability** that a sample belongs to a certain class. **Log loss** measures the difference between the predicted probability and the actual class label (0 or 1) in a probabilistic sense. **MSE**, on the other hand, measures the average squared difference between predicted probabilities and actual labels, which is not probabilistically principled.
+  - Gradient:  Log loss produces **larger gradients** when predictions are very wrong (e.g., predicting 0.01 when the label is 1), which helps the model learn faster and better. MSE yields **small gradients** near 0 or 1, leading to **slower convergence** and potential vanishing gradient issues in logistic regression.
+    - For example, suppose the true label is 1, and predicted probability = 0.01. Gradients are: **Log loss** = `-log(0.01)` ≈ **4.6**, **MSE** = `(1 - 0.01)^2` ≈ **0.98**
+- For classification with more than 2 classes, why CE is preferred over MSE
+  - Cross-entropy directly compares the predicted **probability distribution** (e.g., softmax outputs) to the **true label distribution** (typically one-hot encoded). It evaluates how well the predicted probability aligns with the actual class — this is exactly what classification is about.
+  - MSE treats the output as **continuous values** and penalizes the squared distance from the one-hot label. It doesn't consider the **relative probabilities** across all classes — predicting `[0.1, 0.1, 0.1, 0.6, 0.1, 0.1, ...]` is closer to correct than `[0.0, 0.0, ..., 0.1]`, but MSE can’t capture this effectively.
+  - Gradient (similar to above)
+  - If your model uses **softmax** for output, minimizing cross-entropy is equivalent to **maximum likelihood estimation (MLE)** — a statistically grounded approach. This makes it the **theoretically correct loss function** for classification under a probabilistic model.
+
+#### MSE
+
+- MSE, RMSE, and MAE
+
+  - MSE: Average of the **squared errors** between predicted values and actual values. MRE = sqrt(MSE). MAE: Average of the **absolute differences** between predicted and actual values, less sensitive to outliers.
+
+  
