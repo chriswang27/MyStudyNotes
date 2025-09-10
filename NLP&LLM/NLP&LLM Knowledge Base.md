@@ -306,8 +306,6 @@ Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = *
 
 - Expert capacity
 
-
-
 ## Tokenizer
 
 ### BPE
