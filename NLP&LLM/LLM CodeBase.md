@@ -1895,7 +1895,7 @@ Current tokens can only see previous current tokens, not future ones.
 
 The mask ensures that the attention mechanism respects causality even when we're mixing cached computations with new token processing!
 
-## MOE
+# MOE
 
 ```python
 import torch
@@ -2121,7 +2121,7 @@ if __name__ == "__main__":
     test_moe()
 ```
 
-## BPE
+# BPE
 
 ```python
 import re
@@ -2517,5 +2517,390 @@ Applications:
 - Text classification and generation
 - Multilingual NLP systems
     """)
+```
+
+# Attention Variants
+
+## MQA
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class MultiQueryAttention(nn.Module):
+    """
+    Multi-Query Attention module.
+
+    In MQA, Key and Value projections are shared across all heads,
+    while the Query projection is per-head.
+
+    Args:
+        d_model: Hidden dimension size
+        num_heads: Number of attention heads
+        dropout: Dropout rate
+    """
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super(MultiQueryAttention, self).__init__()
+        
+        # Ensure d_model is divisible by num_heads
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        
+        self.d_model = d_model       # Model dimension (e.g., 512)
+        self.num_heads = num_heads   # Number of attention heads (e.g., 8)
+        self.d_k = d_model // num_heads # Dimension per head (e.g., 64)
+        
+        # --- MQA MODIFICATION ---
+        # Query projection remains multi-headed
+        self.W_q = nn.Linear(d_model, d_model)
+        
+        # Key and Value projections are now single-headed (shared across heads)
+        # Their output dimension is d_k, not d_model
+        self.W_k = nn.Linear(d_model, self.d_k)
+        self.W_v = nn.Linear(d_model, self.d_k)
+        
+        # Output projection remains the same
+        self.W_o = nn.Linear(d_model, d_model)
+        
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, query, key, value, mask=None):
+        """
+        Args:
+            query: Query tensor [batch_size, seq_length_q, d_model]
+            key: Key tensor [batch_size, seq_length_k, d_model]
+            value: Value tensor [batch_size, seq_length_v, d_model]
+            mask: Optional mask tensor [batch_size, 1, seq_length_q, seq_length_k]
+                  (seq_length_k = seq_length_v)
+        
+        Returns:
+            Output tensor of shape [batch_size, seq_length_q, d_model]
+            Attention weights of shape [batch_size, num_heads, seq_length_q, seq_length_k]
+        """
+        batch_size = query.size(0)
+        
+        # Project Query and reshape for multi-head
+        # Q: [batch_size, seq_length_q, d_model] -> [batch_size, num_heads, seq_length_q, d_k]
+        Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        
+        # --- MQA MODIFICATION ---
+        # Project Key and Value (shared heads)
+        # K: [batch_size, seq_length_k, d_model] -> [batch_size, seq_length_k, d_k]
+        # V: [batch_size, seq_length_v, d_model] -> [batch_size, seq_length_v, d_k]
+        K = self.W_k(key)
+        V = self.W_v(value)
+        
+        # Calculate scaled dot-product attention
+        # Q: [batch_size, num_heads, seq_length_q, d_k]
+        # K.T: [batch_size, d_k, seq_length_k] (K is broadcasted across num_heads)
+        # scores: [batch_size, num_heads, seq_length_q, seq_length_k]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        
+        # Apply mask if provided
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+            
+        # Calculate attention weights
+        # [batch_size, num_heads, seq_length_q, seq_length_k]
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        
+        # Apply attention weights to values
+        # attention_weights: [batch_size, num_heads, seq_length_q, seq_length_k]
+        # V: [batch_size, seq_length_v, d_k] (V is broadcasted across num_heads)
+        # out: [batch_size, num_heads, seq_length_q, d_k]
+        out = torch.matmul(attention_weights, V)
+        
+        # Reshape back: [batch_size, num_heads, seq_length_q, d_k] -> [batch_size, seq_length_q, d_model]
+        out = out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        
+        # Final linear projection
+        # [batch_size, seq_length_q, d_model]
+        out = self.W_o(out)
+        
+        return out, attention_weights
+```
+
+Summary of Changes
+
+1. **`__init__` Method**:
+   - The linear layers for Key (`self.W_k`) and Value (`self.W_v`) are changed to project the `d_model` input down to `d_k` (the dimension of a single head).
+   - `self.W_k = nn.Linear(d_model, self.d_k)`
+   - `self.W_v = nn.Linear(d_model, self.d_k)`
+2. **`forward` Method**:
+   - The Key and Value tensors are projected directly to their final head dimension `d_k`. They now have the shape `[batch_size, seq_length, d_k]`.
+   - The complex reshaping (`.view(...).transpose(...)`) for K and V is removed.
+   - During the `torch.matmul` operations for calculating scores and the final output, PyTorch's broadcasting automatically handles the shape mismatch between the multi-headed Query (`Q`) and the single-headed Key (`K`) and Value (`V`). The `num_heads` dimension in `Q` is matched by implicitly "copying" `K` and `V` for each head without actually using more memory.
+
+## GQA
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class GroupedQueryAttention(nn.Module):
+    """
+    Grouped-Query Attention module.
+
+    This module is a modification of Multi-Head Attention where Key and Value heads
+    are shared across groups of Query heads.
+
+    Args:
+        d_model: Hidden dimension size.
+        num_q_heads: Number of query heads. This is the total number of heads, 'h'.
+        num_kv_heads: Number of key/value heads. This must be a divisor of num_q_heads.
+        dropout: Dropout rate.
+    """
+    def __init__(self, d_model, num_q_heads, num_kv_heads, dropout=0.1):
+        super(GroupedQueryAttention, self).__init__()
+        
+        # Ensure d_model is divisible by the number of query heads
+        assert d_model % num_q_heads == 0, "d_model must be divisible by num_q_heads"
+        # Ensure the number of query heads is divisible by the number of K/V heads
+        assert num_q_heads % num_kv_heads == 0, "num_q_heads must be divisible by num_kv_heads"
+        
+        self.d_model = d_model
+        self.num_q_heads = num_q_heads
+        self.num_kv_heads = num_kv_heads
+        self.d_k = d_model // num_q_heads # Dimension per head remains the same
+
+        # Calculate the dimension for K and V heads
+        kv_d_model = self.num_kv_heads * self.d_k
+
+        # Linear projections for Query, Key, Value, and Output
+        self.W_q = nn.Linear(d_model, d_model)      # Query projection remains the same size
+        self.W_k = nn.Linear(d_model, kv_d_model)   # Key projection is smaller
+        self.W_v = nn.Linear(d_model, kv_d_model)   # Value projection is smaller
+        self.W_o = nn.Linear(d_model, d_model)      # Output projection remains the same
+
+        self.dropout = nn.Dropout(dropout)
+
+    def _repeat_kv(self, x, num_reps):
+        """
+        Repeats the Key/Value heads to match the number of Query heads.
+        Effectively, each K/V head is duplicated `num_reps` times.
+
+        Shape:
+            x: [batch_size, num_kv_heads, seq_length, d_k]
+        Returns:
+            [batch_size, num_q_heads, seq_length, d_k]
+        """
+        if num_reps == 1:
+            return x
+        batch, num_kv, seq_len, d_k = x.shape
+        # Add a dimension and expand along it
+        x = x.unsqueeze(2).expand(batch, num_kv, num_reps, seq_len, d_k)
+        # Reshape to merge the kv_heads and repetition dimensions
+        return x.reshape(batch, num_kv * num_reps, seq_len, d_k)
+
+    def forward(self, query, key, value, mask=None):
+        """
+        Args:
+            query: Query tensor [batch_size, seq_length_q, d_model]
+            key: Key tensor [batch_size, seq_length_k, d_model]
+            value: Value tensor [batch_size, seq_length_v, d_model]
+            mask: Optional mask tensor [batch_size, 1, seq_length_q, seq_length_k]
+        
+        Returns:
+            Output tensor of shape [batch_size, seq_length_q, d_model]
+            Attention weights of shape [batch_size, num_q_heads, seq_length_q, seq_length_k]
+        """
+        batch_size = query.size(0)
+
+        # Linear projections
+        Q = self.W_q(query)
+        K = self.W_k(key)
+        V = self.W_v(value)
+
+        # Reshape for multi-head attention
+        # Q: [batch_size, seq_length_q, d_model] -> [batch_size, num_q_heads, seq_length_q, d_k]
+        Q = Q.view(batch_size, -1, self.num_q_heads, self.d_k).transpose(1, 2)
+        
+        # K and V have fewer heads, so their shape is different initially
+        # K: [batch_size, seq_length_k, kv_d_model] -> [batch_size, num_kv_heads, seq_length_k, d_k]
+        K = K.view(batch_size, -1, self.num_kv_heads, self.d_k).transpose(1, 2)
+        V = V.view(batch_size, -1, self.num_kv_heads, self.d_k).transpose(1, 2)
+
+        # Repeat K and V heads to match Q heads
+        num_reps = self.num_q_heads // self.num_kv_heads
+        K = self._repeat_kv(K, num_reps)
+        V = self._repeat_kv(V, num_reps)
+
+        # Calculate scaled dot-product attention
+        # [batch, num_q_heads, seq_q, d_k] @ [batch, num_q_heads, d_k, seq_k] -> [batch, num_q_heads, seq_q, seq_k]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+
+        # Apply mask if provided
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+
+        # Calculate attention weights
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+
+        # Apply attention weights to values
+        # [batch, num_q_heads, seq_q, seq_k] @ [batch, num_q_heads, seq_v, d_k] -> [batch, num_q_heads, seq_q, d_k]
+        out = torch.matmul(attention_weights, V)
+
+        # Reshape back to [batch_size, seq_length_q, d_model]
+        out = out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+
+        # Final linear projection
+        out = self.W_o(out)
+        
+        return out, attention_weights
+```
+
+Explanation of Key Changes 🧠⚡️
+
+1. `__init__` Method
+
+- **New Parameters**: We introduce `num_q_heads` (the original `num_heads`) and `num_kv_heads`.
+- **New Assertion**: We add `assert num_q_heads % num_kv_heads == 0` to ensure that the query heads can be evenly grouped.
+- **Smaller K and V Projections**: The linear layers `self.W_k` and `self.W_v` are now smaller. Their output dimension is `num_kv_heads * d_k` instead of `d_model`, as they only need to produce projections for the smaller number of K/V heads.
+
+2. `forward` Method
+
+- **Initial Reshaping**: The `Q` tensor is reshaped as before. The `K` and `V` tensors are reshaped according to their smaller head count (`num_kv_heads`).
+- **Repeating K and V Heads**: This is the core mechanism of GQA. The K and V tensors, which have shape `[batch, num_kv_heads, seq_len, d_k]`, must be expanded to match the `num_q_heads` dimension of the Q tensor for the dot-product attention.
+  - The `_repeat_kv` helper function handles this by duplicating each K/V head `num_reps` times, where `num_reps = num_q_heads // num_kv_heads`.
+  - For example, if you have 8 query heads and 2 K/V heads, each K/V head is repeated 4 times. This allows the first 4 query heads to attend to the first K/V head, and the next 4 query heads to attend to the second K/V head.
+- **Attention Calculation**: The rest of the process (calculating scores, applying softmax, and weighting values) proceeds just like in standard Multi-Head Attention, as the K and V tensors now have the same dimensions as the Q tensor.
+
+# Decoding
+
+## Beam Search with Temperature, top_p, top_k
+
+```python
+import torch
+import torch.nn.functional as F
+
+
+@torch.no_grad()
+def beam_search_decode(
+    model,
+    input_ids: torch.Tensor,
+    beam_size: int = 4,
+    max_length: int = 50,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    top_p: float = 1.0,
+    eos_token_id: int = None,
+    length_penalty: float = 1.0,
+    repetition_penalty: float = 1.0,
+):
+    """
+    Beam Search decoding with temperature, top-k, top-p, EOS, length, and repetition penalties.
+    All tensor shapes are explicitly commented for clarity.
+    """
+
+    device = input_ids.device
+    batch_size = input_ids.size(0)                   # [B]
+    vocab_size = model(input_ids).logits.size(-1)    # scalar (V)
+
+    # ---- Initialization ----
+    sequences = input_ids.unsqueeze(1).repeat(1, beam_size, 1)  # [B, beam, seq_len]
+    beam_scores = torch.zeros(batch_size, beam_size, device=device)  # [B, beam]
+    beam_scores[:, 1:] = -1e9  # only first beam active initially
+    finished = torch.zeros(batch_size, beam_size, dtype=torch.bool, device=device)  # [B, beam]
+
+    # ---- Decoding loop ----
+    for step in range(max_length - input_ids.size(1)):
+        # Flatten beams for model input
+        flat_input = sequences.view(batch_size * beam_size, -1)  # [B*beam, seq_len]
+
+        # Forward pass through model
+        outputs = model(flat_input)
+        logits = outputs.logits[:, -1, :]  # [B*beam, vocab]
+
+        # Apply temperature scaling
+        logits = logits / max(temperature, 1e-8)  # [B*beam, vocab]
+
+        # Apply repetition penalty
+        if repetition_penalty != 1.0:
+            for i in range(flat_input.size(0)):  # iterate over each (batch*beam)
+                for token_id in set(flat_input[i].tolist()):
+                    logits[i, token_id] /= repetition_penalty  # scalar update
+
+        # Apply top-k / top-p filtering
+        filtered_logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)  # [B*beam, vocab]
+
+        # Convert logits → log-probs
+        log_probs = F.log_softmax(filtered_logits, dim=-1)  # [B*beam, vocab]
+
+        # Reshape to group beams per batch
+        log_probs = log_probs.view(batch_size, beam_size, vocab_size)  # [B, beam, vocab]
+
+        # Combine with previous beam scores
+        next_scores = beam_scores.unsqueeze(-1) + log_probs  # [B, beam, vocab]
+
+        # Flatten across (beam × vocab) for ranking
+        next_scores = next_scores.view(batch_size, -1)  # [B, beam*vocab]
+
+        # Select top beam_size candidates for each batch
+        top_scores, top_ids = torch.topk(next_scores, beam_size, dim=-1)
+        # top_scores: [B, beam]
+        # top_ids: [B, beam], each value ∈ [0, beam*vocab)
+
+        # Decode back into (beam_index, token_index)
+        next_beams = top_ids // vocab_size  # [B, beam]
+        next_tokens = top_ids % vocab_size  # [B, beam]
+
+        # ---- Construct new sequences ----
+        new_sequences = []
+        for b in range(batch_size):
+            seq_batch = []
+            for i in range(beam_size):
+                prev_seq = sequences[b, next_beams[b, i]].clone()  # [seq_len]
+                new_seq = torch.cat([prev_seq, next_tokens[b, i].unsqueeze(0)])  # [seq_len+1]
+                seq_batch.append(new_seq)
+            new_sequences.append(torch.stack(seq_batch))  # [beam, seq_len+1]
+        sequences = torch.stack(new_sequences)  # [B, beam, seq_len+1]
+
+        # Update beam scores
+        beam_scores = top_scores  # [B, beam]
+
+        # ---- Handle EOS ----
+        if eos_token_id is not None:
+            eos_mask = next_tokens.eq(eos_token_id)  # [B, beam]
+            finished |= eos_mask                     # update finished mask [B, beam]
+
+        # ---- Early stopping ----
+        if finished.all():
+            break
+
+        # ---- Apply length penalty progressively ----
+        beam_scores = beam_scores / (sequences.size(-1) ** length_penalty)
+
+    # ---- Return final sequences and scores ----
+    return sequences, beam_scores  # [B, beam, seq_len_out], [B, beam]
+
+
+def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")):
+    """
+    Apply top-k and/or top-p (nucleus) filtering to logits.
+    logits: [B*beam, vocab]
+    """
+    if top_k > 0:
+        top_k = min(top_k, logits.size(-1))
+        values, _ = torch.topk(logits, top_k)
+        min_values = values[:, -1].unsqueeze(1)  # [B*beam, 1]
+        logits = torch.where(logits < min_values, filter_value, logits)  # [B*beam, vocab]
+
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)  # [B*beam, vocab]
+        probs = F.softmax(sorted_logits, dim=-1)  # [B*beam, vocab]
+        cumprobs = probs.cumsum(dim=-1)  # [B*beam, vocab]
+        cutoff = cumprobs > top_p
+        cutoff[:, 1:] = cutoff[:, :-1].clone()
+        cutoff[:, 0] = False
+        sorted_logits[cutoff] = filter_value
+        logits.scatter_(1, sorted_indices, sorted_logits)  # restore order
+
+    return logits  # [B*beam, vocab]
+
 ```
 

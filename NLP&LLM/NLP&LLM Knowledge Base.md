@@ -285,18 +285,25 @@ Two questions:
 - Which experts to route?
 - How much weight to assign to each expert's output?
 
-Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = **expert selector matrix** [dim, num_experts]
+Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = **expert selector matrix** [num_token, num_experts]
 
 - Select top_k experts for each token
 
-- Replace non-selected values with negative infinity, apply softmax to the values, and get weight for each select expert.
+- Replace non-selected values with negative infinity, apply softmax to the values, and get weight for each select expert. - Non sale
 
 #### Load Imbalance
 
 - Auxiliary loss
 
+  - Sum the expert chosing probability for each token together, which represents how likely an expert will be chosen - importance score
+  
+  - Calculate the coefficient variation of the expert importance score
+  
+  
   	- Should be high if expert importance variance is high.
   	- Aux Loss = scaling factor * coefficient variance
+  
+  - A seperate loss to add in training
   
 - However, assigin equal importance to experts does not mean uniform token routing.
 
@@ -306,9 +313,18 @@ Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = *
 
 - Expert capacity
 
+  - If some experts receives very few tokens, it is undertrained
+
+  - Set the **Expert capacity**: tokens exceed the threshold are routed to the next most liky expert
+  - In top2 setting, if both experts are full, any new tokens will not be processed by any expert but instead sent to next layer - **token overflow**
+
+
 ## Tokenizer
 
 ### BPE
 
 Most common pair of consecutive byte of data is replaced with a byte that does not occur in data.
 
+
+
+https://aldsxhs.agiso.com/t/rfjbvz_653EA4D5495DCF1C456BE27B85D690D81A93A3E316624E5E62E19C3644981A5C

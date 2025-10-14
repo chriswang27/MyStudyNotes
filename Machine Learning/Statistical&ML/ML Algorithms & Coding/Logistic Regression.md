@@ -62,3 +62,46 @@ def updateWeights(features, labels, weights, lr):
     return weights
 ```
 
+## Coding
+
+```python
+import numpy as np
+
+class LogisticRegression:
+    def __init__(self, lr=0.01, n_iter=1000):
+        self.lr = lr
+        self.n_iter = n_iter
+        self.weights = None
+        self.bias = None
+
+    def sigmoid(self, z):
+        return 1 / (1 + np.exp(-z))
+    
+    def fit(self, X, y):
+        n_samples, n_features = X.shape
+        # initialize parameters
+        self.weights = np.zeros(n_features)
+        self.bias = 0
+
+        for _ in range(self.n_iter):
+            # linear model
+            linear_model = np.dot(X, self.weights) + self.bias
+            # prediction
+            y_predicted = self.sigmoid(linear_model)
+
+            # gradients
+            dw = (1 / n_samples) * np.dot(X.T, (y_predicted - y))
+            db = (1 / n_samples) * np.sum(y_predicted - y)
+
+            # update
+            self.weights -= self.lr * dw
+            self.bias -= self.lr * db
+
+    def predict_proba(self, X):
+        linear_model = np.dot(X, self.weights) + self.bias
+        return self.sigmoid(linear_model)
+
+    def predict(self, X, threshold=0.5):
+        return np.where(self.predict_proba(X) >= threshold, 1, 0)
+```
+

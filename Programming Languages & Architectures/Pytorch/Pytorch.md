@@ -2,6 +2,128 @@
 
 ## Parallel
 
+### Implement a MLP and train it using DDP
+
+```python
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
+import torchvision
+import torchvision.transforms as transforms
+
+# -------------------------------
+# MLP Model Definition
+# -------------------------------
+class MLP(nn.Module):
+    def __init__(self, input_size=784, hidden_size=256, num_classes=10):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+# -------------------------------
+# Training function
+# -------------------------------
+def train(rank, world_size):
+    # Initialize process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+    # Set device
+    torch.cuda.set_device(rank)
+    device = torch.device(f"cuda:{rank}")
+
+    # Hyperparameters
+    input_size = 784
+    hidden_size = 256
+    num_classes = 10
+    num_epochs = 5
+    batch_size = 100
+    learning_rate = 0.001
+
+    # Dataset and Distributed Sampler
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    train_dataset = torchvision.datasets.MNIST(root='./data', train=True, transform=transform, download=True)
+    test_dataset = torchvision.datasets.MNIST(root='./data', train=False, transform=transform, download=True)
+
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
+    test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, sampler=train_sampler)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=test_sampler)
+
+    # Model, Loss, Optimizer
+    model = MLP(input_size, hidden_size, num_classes).to(device)
+    model = DDP(model, device_ids=[rank])
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # Training Loop
+    for epoch in range(num_epochs):
+        model.train()
+        train_sampler.set_epoch(epoch)  # For shuffling each epoch
+        total_loss = 0
+        for images, labels in train_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        if rank == 0:  # Only master prints
+            print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.4f}")
+
+    # Evaluation
+    if rank == 0:
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images = images.to(device)
+                labels = labels.to(device)
+                outputs = model(images)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        print(f"Test Accuracy: {100 * correct / total:.2f}%")
+
+    # Cleanup
+    dist.destroy_process_group()
+
+# -------------------------------
+# Entry Point
+# -------------------------------
+def main():
+    world_size = 2  # Two GPUs
+    mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
+
+if __name__ == "__main__":
+    main()
+
+```
+
+
+
 ### Comparison between `DataParallel` and `DistributedDataParallel`
 
 Before we dive in, let’s clarify why, despite the added complexity, you would consider using `DistributedDataParallel` over `DataParallel`:
@@ -83,9 +205,29 @@ As you can see, DDP wraps lower-level distributed communication details and prov
 
 将 Batch 中的数据等分输入到不同的模型 Node 中进行前向传播，方向传播时对多个 Node 回传的梯度进行平均
 
+## 一些函数
 
+### tensor.view vs tensor.reshape
 
-### 一些函数
+The key difference between `x.reshape()` and `x.view()` in PyTorch lies in how they handle **memory contiguity**. While both can change a tensor's shape, `view()` is stricter than `reshape()`.
+
+- `x.view()` **requires** the tensor to be **contiguous** in memory. It creates a new tensor that shares the same underlying data without making a copy. This is highly efficient but will raise an error if the memory is not laid out sequentially.
+- `x.reshape()` is more flexible. If the tensor is contiguous, it acts just like `view()` and returns a view without copying data. However, if the tensor is **not contiguous**, `reshape()` will create a **copy** of the data with the new shape, which can be less performant and use more memory.
+
+In short, `view()` is a direct look at the original data with different dimensions, while `reshape()` will do whatever it takes (either viewing or copying) to give you a tensor with the desired shape.
+
+*What is Contiguous Memory?*
+
+A tensor is **contiguous** if its elements are stored in memory one after another without gaps, in the same order that you would read them. Think of a list of numbers in a book; if they are all on the same page, one after the other, they are contiguous.
+
+Some operations, like transposing (`.t()`) or slicing with a step, can create non-contiguous tensors. These operations don't re-arrange the data in memory; they just change how the tensor is indexed by modifying its metadata (called strides). This breaks the sequential layout, and `view()` can no longer be used.
+
+*When to Use Which?*
+
+- **Use `view()`** when you are certain the tensor is contiguous and you want to ensure no data is copied for maximum performance and memory efficiency.
+- **Use `reshape()`** as a more robust and flexible option when you are unsure about the tensor's memory layout. It's a safer default choice if you just need to change the shape and aren't concerned about potential data copies.
+
+If you encounter an error with `view()` on a non-contiguous tensor, you can make it contiguous before viewing by calling `x.contiguous().view(...)`.
 
 #### pack_padded_sequence
 

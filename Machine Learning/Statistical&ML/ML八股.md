@@ -48,6 +48,12 @@ ML八股
   - A model is **over-parameterized** when it has **more parameters than training data** (e.g., deep neural networks with millions of weights and only thousands of examples). This means the model can **perfectly fit (memorize)** the training data — even noise or random labels.
   - Without constraints, it leads to: Overfitting, Poor generalization
 
+#### Decision Tree
+
+#### Bagging & Boosting
+
+
+
 ### ML Workflow
 
 #### Basics
