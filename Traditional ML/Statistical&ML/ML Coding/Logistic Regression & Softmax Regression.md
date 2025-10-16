@@ -105,3 +105,103 @@ class LogisticRegression:
         return np.where(self.predict_proba(X) >= threshold, 1, 0)
 ```
 
+# Softmax Regression
+
+### **Setup**
+
+- Input $x \in \mathbb{R}^d$
+- Labels $y \in \{1, 2, ..., K\}$
+- Weight matrix $W \in \mathbb{R}^{d \times K}, b \in \mathbb{R}^K$
+
+### **Prediction**
+
+For each class k
+
+$P(y = k | x) = \frac{e^{w_k^T x + b_k}}{\sum_{j=1}^{K} e^{w_j^T x + b_j}}$
+
+Let’s denote $\hat{y} = \text{softmax}(W^T x + b)$
+
+------
+
+### Loss Function (Categorical Cross-Entropy)
+
+If we use one-hot encoded labels
+
+$L = - \frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log \hat{y}_{ik}$
+
+------
+
+### **Gradient**
+
+For weights:
+
+$\nabla_W L = \frac{1}{N} X^T (\hat{Y} - Y)$
+
+For bias:
+
+$\nabla_b L = \frac{1}{N} \sum_{i=1}^{N} (\hat{y}_i - y_i)$
+
+![Screenshot 2025-10-16 at 12.11.20 AM](../../../img/ML/lr vs sr.png)
+
+```python
+import numpy as np
+
+# ----- Step 1: Generate toy dataset -----
+np.random.seed(42)
+num_samples = 300
+num_features = 4
+num_classes = 3
+
+X = np.random.randn(num_samples, num_features)
+true_W = np.random.randn(num_features, num_classes)
+true_b = np.random.randn(num_classes)
+y = np.argmax(X @ true_W + true_b + np.random.randn(num_samples, num_classes)*0.5, axis=1)
+
+# ----- Step 2: One-hot encode labels -----
+def one_hot(y, num_classes):
+    y_onehot = np.zeros((len(y), num_classes))
+    y_onehot[np.arange(len(y)), y] = 1
+    return y_onehot
+
+y_onehot = one_hot(y, num_classes)
+
+# ----- Step 3: Initialize weights -----
+W = np.zeros((num_features, num_classes))
+b = np.zeros((num_classes,))
+
+# ----- Step 4: Define helper functions -----
+def softmax(z):
+    exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))  # for numerical stability
+    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+
+def cross_entropy_loss(y_true, y_pred):
+    return -np.mean(np.sum(y_true * np.log(y_pred + 1e-8), axis=1))
+
+# ----- Step 5: Gradient Descent -----
+lr = 0.1
+epochs = 500
+
+for epoch in range(epochs):
+    # Forward pass
+    logits = X @ W + b
+    y_pred = softmax(logits)
+    loss = cross_entropy_loss(y_onehot, y_pred)
+
+    # Gradients
+    grad_W = (1 / num_samples) * X.T @ (y_pred - y_onehot)
+    grad_b = (1 / num_samples) * np.sum(y_pred - y_onehot, axis=0)
+
+    # Parameter update
+    W -= lr * grad_W
+    b -= lr * grad_b
+
+    if (epoch + 1) % 50 == 0:
+        print(f"Epoch {epoch+1}: Loss = {loss:.4f}")
+
+# ----- Step 6: Evaluate -----
+pred_labels = np.argmax(X @ W + b, axis=1)
+acc = np.mean(pred_labels == y)
+print(f"\nTraining Accuracy: {acc*100:.2f}%")
+
+```
+
