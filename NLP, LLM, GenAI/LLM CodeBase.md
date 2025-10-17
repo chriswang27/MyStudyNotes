@@ -2772,7 +2772,9 @@ Explanation of Key Changes 🧠⚡️
 
 # Decoding
 
-## Beam Search with Temperature, top_p, top_k
+## Beam Search
+
+### Batch Beam Search with Temperature, top_p, top_k
 
 ```python
 import torch
@@ -2901,6 +2903,61 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         logits.scatter_(1, sorted_indices, sorted_logits)  # restore order
 
     return logits  # [B*beam, vocab]
+
+```
+
+### Simpler version
+
+```python
+import torch
+import torch.nn.functional as F
+
+def beam_search(model, start_token, beam_size=3, max_len=10, end_token=None, vocab_size=1000):
+    """
+    Args:
+        model: function that takes tensor of shape [batch, seq_len]
+               and returns logits of shape [batch, vocab_size].
+        start_token: int, the token to start decoding with.
+        beam_size: int, number of beams to keep.
+        max_len: int, maximum decoding length.
+        end_token: optional int, stop decoding if generated.
+        vocab_size: size of vocabulary.
+    Returns:
+        List of (sequence, log_prob) tuples.
+    """
+
+    # Each beam is (sequence, log_prob)
+    beams = [(torch.tensor([start_token]), 0.0)]
+
+    for _ in range(max_len):
+        new_beams = []
+
+        for seq, score in beams:
+            # Stop expanding if end_token already generated
+            if end_token is not None and seq[-1].item() == end_token:
+                new_beams.append((seq, score))
+                continue
+
+            # Get next token logits from model
+            logits = model(seq.unsqueeze(0))[:, -1, :]  # [1, vocab_size]
+            log_probs = F.log_softmax(logits, dim=-1).squeeze(0)  # [vocab_size]
+
+            # Get top beam_size candidates
+            top_log_probs, top_tokens = torch.topk(log_probs, beam_size)
+
+            for log_p, tok in zip(top_log_probs, top_tokens):
+                new_seq = torch.cat([seq, tok.view(1)])
+                new_score = score + log_p.item()
+                new_beams.append((new_seq, new_score))
+
+        # Keep only top beam_size beams
+        beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
+
+        # Early stop if all beams ended
+        if end_token is not None and all(b[0][-1].item() == end_token for b in beams):
+            break
+
+    return beams
 
 ```
 
