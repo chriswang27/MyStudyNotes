@@ -325,6 +325,4 @@ Routing matrix: trainable, [dim, num_experts]. Input matrix * routing matrix = *
 
 Most common pair of consecutive byte of data is replaced with a byte that does not occur in data.
 
-
-
 https://aldsxhs.agiso.com/t/rfjbvz_653EA4D5495DCF1C456BE27B85D690D81A93A3E316624E5E62E19C3644981A5C

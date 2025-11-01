@@ -936,14 +936,15 @@ class DecoderBlock(nn.Module):
     def forward(self, x, mask=None):
         # Self-attention with residual connection
         attn_output = self.self_attn(x, mask)
-        x = self.norm1(x + self.dropout(attn_output))
+        x = self.norm1(x + self.dropout(attn_output))  # Do dropout here is no dropout at the end of MHA forward
         
         # Feed-forward with residual connection
         ff_output = self.feed_forward(x)
-        x = self.norm2(x + self.dropout(ff_output))
+        x = self.norm2(x + self.dropout(ff_output))  # Do dropout here is no dropout at the end of FFN forward
         
         return x
 
+    
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
@@ -962,6 +963,7 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         return x + self.pe[:, :x.size(1)]
 
+    
 class DecoderLLM(nn.Module):
     def __init__(self, vocab_size, d_model=512, n_heads=8, n_layers=6, d_ff=2048, max_len=5000):
         super().__init__()
