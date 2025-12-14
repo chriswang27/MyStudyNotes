@@ -22,17 +22,10 @@
 The implementation includes two crucial masks:
 
 - **Padding mask**: Prevents the model from attending to padding tokens
+  - In encoder, we only need to mask keys, not queries. because we need to prevent a query attend to a pad, but we don't need to mask a pad query, which will be ignored during loss computation.
+
 - **Look-ahead mask**: Prevents the decoder from "seeing the future" during training
-
-#### Attention Mechanism
-
-The attention mechanism calculates scores between queries and keys, scales them, applies masking, and then uses these weights to compute a weighted sum of values:
-
-```
-scores = (Q × K^T) / sqrt(d_k)
-attention_weights = softmax(scores)
-output = attention_weights × V
-```
+- Both attention masks are masking **keys** from being attended to, **not queries**.
 
 #### Multi-Head Attention
 
@@ -90,7 +83,7 @@ class PositionalEncoding(nn.Module):
         # Create a matrix of shape (max_seq_length, d_model)
         pe = torch.zeros(max_seq_length, d_model)
         
-        # Create a vector of shape (max_seq_length)
+        # Create a vector of shape (max_seq_length, 1)
         position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
         
         # Create a vector of shape (d_model)
@@ -118,7 +111,7 @@ class PositionalEncoding(nn.Module):
         # x shape: [batch_size, seq_length, d_model]
         # pe shape: [1, max_seq_length, d_model] -> using only up to seq_length
         x = x + self.pe[:, :x.size(1), :]
-        return self.dropout(x)
+        return x
 
 
 class MultiHeadAttention(nn.Module):
@@ -298,75 +291,51 @@ class EncoderLayer(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    """
-    Decoder layer consisting of masked multi-head self-attention, 
-    multi-head encoder-decoder attention, and position-wise feed forward network.
+  """
+  Decoder layer consisting of masked multi-head self-attention, 
+  multi-head encoder-decoder attention, and position-wise feed forward network.
+  
+  Args:
+      d_model: Hidden dimension size
+      num_heads: Number of attention heads
+      d_ff: Feed forward dimension size
+      dropout: Dropout rate
+  """
+  def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+    super(DecoderLayer, self).__init__()
     
-    Args:
-        d_model: Hidden dimension size
-        num_heads: Number of attention heads
-        d_ff: Feed forward dimension size
-        dropout: Dropout rate
-    """
-    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
-        super(DecoderLayer, self).__init__()
-        
-        # Multi-head self-attention mechanism
-        self.self_attention = MultiHeadAttention(d_model, num_heads, dropout)
-        
-        # Multi-head encoder-decoder attention
-        self.encoder_attention = MultiHeadAttention(d_model, num_heads, dropout)
-        
-        # Layer normalization layers
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        
-        # Position-wise feed forward network
-        self.feed_forward = PointwiseFeedForward(d_model, d_ff, dropout)
-        
-        # Dropout layers
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-        
-    def forward(self, x, enc_output, look_ahead_mask=None, padding_mask=None):
-        """
-        Args:
-            x: Decoder input tensor of shape [batch_size, seq_length_q, d_model]
-            enc_output: Encoder output tensor of shape [batch_size, seq_length_k, d_model]
-            look_ahead_mask: Mask for self-attention of shape [batch_size, 1, seq_length_q, seq_length_q]
-            padding_mask: Mask for encoder-decoder attention of shape [batch_size, 1, seq_length_q, seq_length_k]
-        
-        Returns:
-            Output tensor of shape [batch_size, seq_length_q, d_model]
-            Self-attention weights of shape [batch_size, num_heads, seq_length_q, seq_length_q]
-            Encoder-decoder attention weights of shape [batch_size, num_heads, seq_length_q, seq_length_k]
-        """
-        # Masked multi-head self-attention
-        # x shape: [batch_size, seq_length_q, d_model]
-        attn1_output, self_attention_weights = self.self_attention(x, x, x, look_ahead_mask)
-        
-        # Residual connection and layer normalization
-        # [batch_size, seq_length_q, d_model]
-        x = self.norm1(x + self.dropout1(attn1_output))
-        
-        # Multi-head encoder-decoder attention
-        # query=x shape: [batch_size, seq_length_q, d_model]
-        # key=value=enc_output shape: [batch_size, seq_length_k, d_model]
-        attn2_output, enc_dec_attention_weights = self.encoder_attention(
-            x, enc_output, enc_output, padding_mask)
-        
-        # Residual connection and layer normalization
-        # [batch_size, seq_length_q, d_model]
-        x = self.norm2(x + self.dropout2(attn2_output))
-        
-        # Position-wise feed forward network with residual connection and layer normalization
-        # [batch_size, seq_length_q, d_model]
-        ff_output = self.feed_forward(x)
-        x = self.norm3(x + self.dropout3(ff_output))
-        
-        return x, self_attention_weights, enc_dec_attention_weights
+    # Multi-head self-attention mechanism
+    self.self_attention = MultiHeadAttention(d_model, num_heads, dropout)
+    
+    # Multi-head encoder-decoder attention
+    self.encoder_attention = MultiHeadAttention(d_model, num_heads, dropout)
+    
+    # Layer normalization layers
+    self.norm1 = nn.LayerNorm(d_model)
+    self.norm2 = nn.LayerNorm(d_model)
+    self.norm3 = nn.LayerNorm(d_model)
+    
+    # Position-wise feed forward network
+    self.feed_forward = PointwiseFeedForward(d_model, d_ff, dropout)
+    
+    # Dropout layers
+    self.dropout1 = nn.Dropout(dropout)
+    self.dropout2 = nn.Dropout(dropout)
+    self.dropout3 = nn.Dropout(dropout)
+
+  def forward(self, x, enc_output, tgt_mask=None, memory_mask=None):
+    # pre-norm version
+    x = self.norm1(x)
+    self_attn_output = self.self_attention(x, x, x, tgt_mask)
+    x = x + self.dropout1(self_attn_output)
+
+    x = self.norm2(x)
+    cross_attn_output = self.encoder_attention(x, enc_output, enc_output, memory_mask)
+    x = x + self.dropout2(cross_attn_output)
+
+    x = self.norm3(x)
+    ffn_out = self.feed_forward(x)
+    return x + self.dropout3(ffn_out)
 
 
 class Encoder(nn.Module):
@@ -592,73 +561,52 @@ class Transformer(nn.Module):
 
 def create_padding_mask(seq):
     """
-    Creates a padding mask for attention mechanism.
-    
-    Args:
-        seq: Input sequence tensor of shape [batch_size, seq_length]
-    
-    Returns:
-        Padding mask of shape [batch_size, 1, 1, seq_length]
+    Padding mask: 1 = mask, 0 = keep.
+    Output: [batch_size, 1, 1, seq_length]
     """
-    # Create mask for padding (0 tokens)
-    # seq shape: [batch_size, seq_length]
-    # (seq == 0) shape: [batch_size, seq_length] with True where tokens are padding (0)
-    seq_mask = (seq == 0).float()
-    
-    # Add dimensions for broadcasting with attention scores
-    # [batch_size, 1, 1, seq_length]
-    return seq_mask.unsqueeze(1).unsqueeze(2)
+    mask = (seq == 0).float()  # 1 where PAD
+    return mask[:, None, None, :]  # expand to 4D
 
 
-def create_look_ahead_mask(seq_length):
+def create_look_ahead_mask(size):
     """
-    Creates a look-ahead mask for decoder self-attention.
-    
-    Args:
-        seq_length: Length of the sequence
-    
-    Returns:
-        Look-ahead mask of shape [seq_length, seq_length]
+    Look-ahead causal mask: 1 = mask, 0 = keep.
+    Output: [1, size, size]
     """
-    # Create upper triangular matrix with 1s
-    # [seq_length, seq_length]
-    mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).float()
-    
-    # Flip values: 0 -> 1, 1 -> 0 (1 means positions to mask)
-    # [seq_length, seq_length]
-    return mask
+    mask = torch.triu(torch.ones(size, size), diagonal=1)  # upper triangle = 1
+    return mask[None, :, :]  # add batch dim for broadcasting
 
 
 def create_masks(src, tgt):
     """
-    Creates all masks needed for transformer training.
-    
-    Args:
-        src: Source sequence tensor of shape [batch_size, src_seq_length]
-        tgt: Target sequence tensor of shape [batch_size, tgt_seq_length]
-    
     Returns:
-        Source padding mask of shape [batch_size, 1, 1, src_seq_length]
-        Target combined mask of shape [batch_size, 1, tgt_seq_length, tgt_seq_length]
-        Target padding mask of shape [batch_size, 1, 1, src_seq_length]
+      src_padding_mask:       [B, 1, 1, S]
+      tgt_combined_mask:      [B, 1, T, T]
+      memory_key_padding_mask:[B, 1, 1, S]
     """
-    # Source padding mask
-    # [batch_size, 1, 1, src_seq_length]
-    src_mask = create_padding_mask(src)
-    
-    # Target padding mask
-    # [batch_size, 1, 1, tgt_seq_length]
-    tgt_padding_mask = create_padding_mask(tgt)
-    
-    # Look-ahead mask for decoder self-attention
-    # [tgt_seq_length, tgt_seq_length]
-    look_ahead_mask = create_look_ahead_mask(tgt.size(1))
-    
-    # Combined decoder self-attention mask (both padding and look-ahead)
-    # [batch_size, 1, tgt_seq_length, tgt_seq_length]
-    combined_mask = torch.max(tgt_padding_mask, look_ahead_mask.unsqueeze(0))
-    
-    return src_mask, combined_mask, src_mask
+    B, S = src.shape
+    _, T = tgt.shape
+
+    # Encoder padding mask
+    src_padding_mask = create_padding_mask(src)
+
+    # Decoder padding mask
+    tgt_padding_mask = create_padding_mask(tgt)  # [B,1,1,T]
+
+    # Look ahead causal mask
+    look_ahead_mask = create_look_ahead_mask(T)  # [1,T,T]
+
+    # Broadcast tgt_padding_mask to [B,1,T,T]
+    tgt_padding_mask = tgt_padding_mask.expand(-1, -1, T, -1)  # [B,1,T,T]
+
+    # Combine: 1 = mask, 0 = allowed
+    combined_mask = torch.logical_or(tgt_padding_mask.bool(),
+                                     look_ahead_mask.bool()).float()
+
+    # Cross-attention mask = mask encoder PADs
+    memory_key_padding_mask = src_padding_mask  # [B,1,1,S]
+
+    return src_padding_mask, combined_mask, memory_key_padding_mask
 
 
 def demonstration():
